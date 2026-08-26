@@ -1,5 +1,7 @@
 # Ad feed robot
 
+[![tests](https://github.com/harl95van-cpu/ad-feed-robot/actions/workflows/tests.yml/badge.svg)](https://github.com/harl95van-cpu/ad-feed-robot/actions/workflows/tests.yml)
+
 A scheduled job that keeps a product feed for ad platforms in sync with the
 advertiser's website, and records every change it finds along the way.
 
