@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+feed_robot/clients.json
+*.zip
+*.crt
+data/
+.pytest_cache/
+.idea/
+.vscode/

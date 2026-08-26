@@ -1,0 +1,49 @@
+{
+  "demo": {
+    "shop_name": "Demo Academy",
+    "base_url": "https://demo-academy.example",
+
+    "bucket": "my-feeds-bucket",
+    "feed_key": "feeds/demo.yml",
+    "state_key": "state/demo_state.json",
+    "image_prefix": "img/demo/",
+
+    "listing_profile": "dir_item",
+    "label_source": "title",
+    "min_offers_guard": 100,
+
+    "sections": {
+      "/catalog/design/": "1795",
+      "/catalog/management/": "565",
+      "/catalog/psychology/": "8"
+    },
+
+    "catalog_sections": {
+      "/catalog/design/": "1795",
+      "/catalog/management/": "565",
+      "/catalog/psychology/": "8",
+      "/short-courses/design/": "1795"
+    },
+
+    "include_kinds": ["retraining"],
+
+    "categories": [
+      { "id": "1795", "name": "Design" },
+      { "id": "565", "name": "Management" },
+      { "id": "8", "name": "Psychology" }
+    ],
+
+    "picture_priority": ["personal", "cluster", "category"],
+    "picture_fallback_category": {
+      "1795": "img/demo/fallback_design.jpg",
+      "565": "img/demo/fallback_management.jpg"
+    },
+
+    "forbidden_phrases": [
+      "государственного образца",
+      "с трудоустройством"
+    ],
+
+    "offer_tail": "Дистанционно, старт в любой день."
+  }
+}
