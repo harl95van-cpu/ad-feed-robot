@@ -2,7 +2,7 @@
 """Monthly summary of feed changes, built from the history table.
 
     venv\\Scripts\\python.exe Scripts\\feeds\\feed_builder\\monthly_report.py \\
-        --client demo --month 2026-08
+        --client second --month 2026-08
 
 Without --month it summarises the previous calendar month. The daily job calls
 render() on the first of the month and drops a copy into the bucket.

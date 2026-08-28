@@ -114,8 +114,8 @@ def load_rows(csv_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--client', default='demo')
-    parser.add_argument('--csv', default='data/program_list.csv')
-    parser.add_argument('--out', default='data/creatives')
+    parser.add_argument('--csv', default=r'data\programs.csv')
+    parser.add_argument('--out', default=r'data\creatives')
     parser.add_argument('--model', default='google/gemini-3.1-flash-image')
     parser.add_argument('--limit', type=int, help='generate at most N images')
     parser.add_argument('--ids', help='comma-separated offer ids to (re)generate')

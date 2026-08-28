@@ -68,7 +68,18 @@ def _money(n):
     return '{:,}'.format(int(n)).replace(',', ' ')
 
 
-def format_report(client, diff, feed_url, problems, no_image):
+def format_texts(texts_line):
+    """Generation summary, shown only when the model actually did something.
+
+    A rising share of fallbacks is the signal that the site changed or the model
+    degraded, so it belongs in the same daily report as everything else.
+    """
+    if not texts_line:
+        return []
+    return ['', html.escape(texts_line)]
+
+
+def format_report(client, diff, feed_url, problems, no_image, texts_line=''):
     e = html.escape
     lines = ['<b>Фид %s обновлён</b>' % e(client),
              'Офферов в фиде: %d' % diff['total'],
@@ -106,6 +117,8 @@ def format_report(client, diff, feed_url, problems, no_image):
 
     if no_image:
         lines.append('Без своей картинки: %d офферов (стоят заглушки)' % no_image)
+
+    lines += format_texts(texts_line)
 
     if problems:
         lines.append('')

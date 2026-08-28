@@ -1,0 +1,114 @@
+{
+  "demo": {
+    "shop_name": "Demo Academy",
+    "base_url": "https://demo-academy.example",
+
+    "bucket": "my-feeds-bucket",
+    "feed_key": "feeds/demo.yml",
+    "state_key": "state/demo_state.json",
+    "image_prefix": "img/demo/",
+
+    "listing_profile": "dir_item",
+    "label_source": "title",
+    "min_offers_guard": 100,
+
+    "sections": {
+      "/catalog/design/": "1795",
+      "/catalog/management/": "565",
+      "/catalog/psychology/": "8"
+    },
+
+    "catalog_sections": [
+      "/short-courses/design/"
+    ],
+
+    "include_kinds": ["Retraining"],
+
+    "categories": [
+      { "id": "1795", "parentId": null, "name": "Design" },
+      { "id": "565", "parentId": null, "name": "Management" },
+      { "id": "8", "parentId": null, "name": "Psychology" }
+    ],
+
+    "picture_priority": ["own", "cluster", "stored"],
+    "picture_fallback_category": {
+      "1795": "565"
+    },
+
+    "forbidden_phrases": [
+      "state-recognised",
+      "guaranteed placement"
+    ],
+
+    "title_tail": ". Diploma!",
+    "offer_tail": "Instalments available.",
+
+    "documents": {
+      "Retraining": { "prefix": "Retraining", "document": "Diploma" },
+      "Refresher": { "prefix": "Refresher course", "document": "Certificate" }
+    },
+
+    "facts": {
+      "profession": [
+        {
+          "name": "qualification",
+          "source": "h1",
+          "pattern": "qualification\\s*[«\"]([^»\"]+)[»\"]",
+          "max_len": 70
+        },
+        {
+          "name": "qualification",
+          "source": "h1",
+          "pattern": "qualification\\s*[«\"]([^»\"(]{3,60})\\(",
+          "max_len": 60
+        },
+        {
+          "name": "profession_phrase",
+          "source": "title",
+          "pattern": "^\\s*(?:training|course)\\s+(?:to become|for)\\s+(.{3,60}?)\\s*(?:online|[–—|,]|$)",
+          "max_len": 60
+        },
+        {
+          "name": "heuristic",
+          "source": "title",
+          "pattern": "^([^:|]{3,60}):",
+          "max_len": 60
+        }
+      ],
+      "program": [
+        { "source": "h1", "pattern": "[«\"]([^»\"]+)[»\"]", "max_len": 160 },
+        { "source": "name", "pattern": "^(.{5,160})$" }
+      ],
+      "hours": [
+        { "source": "hints", "pattern": "^(\\d+)", "min": 16, "max": 5000 },
+        { "source": "h1", "pattern": "\\((\\d+)\\s*h", "min": 16, "max": 5000 }
+      ],
+      "duration_months": [
+        {
+          "source": "body",
+          "pattern": "duration[^.;]{0,24}?(\\d{1,2})\\s*month",
+          "reject": "instalment|payment|access|deposit",
+          "min": 1,
+          "max": 36,
+          "template": "{value} mo."
+        }
+      ],
+      "kind": [
+        { "source": "hints", "pattern": "^(\\D.{1,60})$" }
+      ]
+    },
+
+    "mode_overrides": {
+      "12345": "topic"
+    },
+
+    "text_generation": {
+      "enabled": true,
+      "model": "google/gemini-3.1-flash-lite",
+      "temperature": 0.3,
+      "retries": 2,
+      "max_spend_usd": 0.1,
+      "min_balance_usd": 0.05
+    }
+  }
+}

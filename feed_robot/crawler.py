@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Catalog crawler for Bitrix-based course listings.
+"""Catalog crawler for demo-academy.example-style Bitrix course listings.
 
 Collects every program from the configured catalog sections: Bitrix element id,
 title, url, current and old price, duration and program kind. The element id is
@@ -46,7 +46,7 @@ def _prices(chunk):
 
 
 def _parse_dir_item(html, section):
-    """Default listing layout: <div class="dir_item" id="bx_<hash>_<id>">."""
+    """demo-academy.example layout: <div class="dir_item" id="bx_<hash>_<id>">."""
     items = []
     for chunk in html.split('<div class="dir_item"')[1:]:
         m = re.search(r'id="bx_\d+_(\d+)"', chunk)
@@ -63,7 +63,7 @@ def _parse_dir_item(html, section):
 
 
 def _parse_bx_elem(html, section):
-    """Alternative listing layout: <div id="bx_<hash>_<id>" class="bx_elem"> with an
+    """second-academy.example layout: <div id="bx_<hash>_<id>" class="bx_elem"> with an
     <a class="course_title"> link. Listing titles are truncated with an
     ellipsis, so the real name comes from the detail page."""
     items = []
@@ -145,12 +145,38 @@ def crawl_catalog(cfg, sections=None):
     return programs
 
 
-def fetch_details(programs, base_url, workers=6):
-    """Fetch title / h1 / meta description for every program page.
+# The page body is kept as plain text so extraction rules can reach the facts
+# that live neither in the title nor in the meta description — the duration on
+# both of our sites sits in a spec line halfway down the page. Capped because a
+# rule that has not found its fact in the first sixty thousand characters is not
+# going to find it further down, and every page is held in memory at once.
+BODY_LIMIT = 60000
 
-    The meta description is the client's own copy and is unique per program,
-    which is what we use as the offer description.
+_TAGS = re.compile(r'<[^>]+>')
+_SCRIPTS = re.compile(r'<(script|style)\b.*?</\1>', re.S | re.I)
+
+
+def parse_details(html):
+    """Pull the page's facts out of its HTML.
+
+    Split out from the fetching so the same HTML can be re-parsed offline — a
+    change to these rules can then be compared against the old ones on
+    byte-identical input instead of on two crawls of a moving site.
     """
+    d = {}
+    m = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.S)
+    d['h1'] = re.sub(r'\s+', ' ', _TAGS.sub('', m.group(1))).strip() if m else ''
+    m = re.search(r'<title>(.*?)</title>', html, re.S)
+    d['title'] = re.sub(r'\s+', ' ', m.group(1)).strip() if m else ''
+    m = re.search(r'<meta name="description" content="([^"]*)"', html)
+    d['meta'] = re.sub(r'\s+', ' ', m.group(1)).strip() if m else ''
+    text = _TAGS.sub(' ', _SCRIPTS.sub(' ', html))
+    d['body'] = re.sub(r'\s+', ' ', text).strip()[:BODY_LIMIT]
+    return d
+
+
+def fetch_details(programs, base_url, workers=6):
+    """Fetch and parse every program page."""
     session = _session()
 
     def grab(key):
@@ -158,14 +184,7 @@ def fetch_details(programs, base_url, workers=6):
             html = _get(session, base_url + key).text
         except requests.RequestException:
             return key, {}
-        d = {}
-        m = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.S)
-        d['h1'] = re.sub(r'\s+', ' ', re.sub('<[^>]+>', '', m.group(1))).strip() if m else ''
-        m = re.search(r'<title>(.*?)</title>', html, re.S)
-        d['title'] = re.sub(r'\s+', ' ', m.group(1)).strip() if m else ''
-        m = re.search(r'<meta name="description" content="([^"]*)"', html)
-        d['meta'] = re.sub(r'\s+', ' ', m.group(1)).strip() if m else ''
-        return key, d
+        return key, parse_details(html)
 
     pages = {}
     with ThreadPoolExecutor(workers) as ex:

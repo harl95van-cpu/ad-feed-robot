@@ -6,14 +6,18 @@ import mimetypes
 import boto3
 from botocore.exceptions import ClientError
 
-ENDPOINT = 'https://storage.yandexcloud.net'
+# Any S3-compatible store works; only the endpoint and the region differ. Kept
+# as environment variables so moving the feed to another provider is a setting,
+# not an edit — the one thing that must not change is the feed's public URL.
+ENDPOINT = os.environ.get('S3_ENDPOINT') or 'https://storage.yandexcloud.net'
+REGION = os.environ.get('S3_REGION') or 'ru-central1'
 
 
 def client():
     return boto3.client(
         's3',
         endpoint_url=ENDPOINT,
-        region_name='ru-central1',
+        region_name=REGION,
         aws_access_key_id=os.environ['S3_ACCESS_KEY_ID'],
         aws_secret_access_key=os.environ['S3_SECRET_ACCESS_KEY'],
     )

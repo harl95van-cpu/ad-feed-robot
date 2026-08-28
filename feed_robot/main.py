@@ -14,6 +14,7 @@ import catalog
 import crawler
 import feed as feed_builder
 import history
+import llm
 import storage
 import notify
 
@@ -86,11 +87,61 @@ def build_state(offers, today):
             'custom_score': o.get('custom_score'),
             'sales_notes': o.get('sales_notes'),
             'gone_cycles': o.get('gone_cycles', 0),
+            # The written copy, cached so the model is never asked twice for the
+            # same programme: name, its accusative and the duration frozen at
+            # the time of writing. The price is deliberately not here — it is
+            # substituted fresh on every build.
+            'ad': o.get('ad'),
         } for o in offers},
     }
 
 
-def run(client_code, dry_run=False, out_path=None):
+def open_generator(cfg, disabled=False):
+    """Set up ad-copy generation, or explain why the run goes without it.
+
+    Never raises: no key, no credit or a dead endpoint must not stop a feed from
+    being rebuilt. Without a generator every offer keeps the copy it has and new
+    ones fall back to the deterministic rules.
+    """
+    opts = llm.settings(cfg)
+    if disabled:
+        return feed_builder.Generator(None, opts['retries'], 'отключено флагом')
+    client, reason = llm.open_client(cfg)
+    if reason:
+        print('      [тексты] генерация не запущена: %s' % reason)
+    return feed_builder.Generator(client, opts['retries'], reason)
+
+
+def generation_summary(generator):
+    """One line for the console and the Telegram report."""
+    s = generator.stats
+    if generator.reason:
+        # Generation being off does not make the counts uninteresting: the
+        # reshaped titles happen either way and are worth seeing.
+        parts = ['генерация выключена (%s)' % generator.reason,
+                 'без генерации: %d' % (s.get('kept', 0) + s.get('legacy', 0))]
+        if s.get('reshaped'):
+            parts.append('укорочено заголовков: %d' % s['reshaped'])
+        return 'тексты: ' + ', '.join(parts)
+    parts = ['новых от модели: %d' % s.get('model', 0)]
+    if s.get('fallback'):
+        parts.append('откатов: %d' % s['fallback'])
+    if s.get('model'):
+        parts.append('попыток на текст: %.1f'
+                     % (s.get('attempts', 0) / float(s['model'] + s.get('fallback', 0))))
+    if generator.client and generator.client.spent:
+        parts.append('потрачено $%.4f' % generator.client.spent)
+    parts.append('из кэша: %d' % s.get('cached', 0))
+    if s.get('kept'):
+        parts.append('без генерации: %d' % s['kept'])
+    if s.get('reshaped'):
+        parts.append('укорочено заголовков: %d' % s['reshaped'])
+    if s.get('price_mismatch'):
+        parts.append('ЦЕНА НЕ НАЙДЕНА НА СТРАНИЦЕ: %d' % s['price_mismatch'])
+    return 'тексты: ' + ', '.join(parts)
+
+
+def run(client_code, dry_run=False, out_path=None, no_generate=False):
     cfg = load_config(client_code)
     today = datetime.date.today().isoformat()
     s3 = storage.client()
@@ -128,7 +179,9 @@ def run(client_code, dry_run=False, out_path=None):
     print('      своих картинок: %d' % len(images))
 
     print('[4/6] сборка офферов')
-    offers = feed_builder.build_offers(programs, pages, cfg, images, state)
+    generator = open_generator(cfg, no_generate)
+    offers = feed_builder.build_offers(programs, pages, cfg, images, state, generator)
+    print('      %s' % generation_summary(generator))
     problems = feed_builder.validate(offers, cfg)
     if problems:
         print('      проблемы валидации: %d' % len(problems))
@@ -152,8 +205,9 @@ def run(client_code, dry_run=False, out_path=None):
         print('[dry-run] фид не загружен, офферов: %d' % len(offers))
         print(notify.format_report(client_code, diff,
                                    storage.public_url(bucket, cfg['feed_key']),
-                                   problems, no_image))
-        return {'status': 'dry-run', 'offers': len(offers), 'diff': diff}
+                                   problems, no_image, generation_summary(generator)))
+        return {'status': 'dry-run', 'offers': len(offers), 'diff': diff,
+                'texts': dict(generator.stats)}
 
     print('[5/6] загрузка в Object Storage')
     storage.put_text(s3, bucket, cfg['feed_key'], xml, 'application/xml; charset=utf-8')
@@ -179,15 +233,44 @@ def run(client_code, dry_run=False, out_path=None):
         print('[6/6] отчёт в телеграм')
         notify.send(notify.format_report(client_code, diff,
                                          storage.public_url(bucket, cfg['feed_key']),
-                                         problems, no_image))
+                                         problems, no_image,
+                                         generation_summary(generator)))
     else:
         print('[6/6] изменений нет — в телеграм не пишем')
-    return {'status': 'ok', 'offers': len(offers), 'diff': diff, 'problems': len(problems)}
+    return {'status': 'ok', 'offers': len(offers), 'diff': diff,
+            'problems': len(problems), 'texts': dict(generator.stats)}
+
+
+def selftest(cfg):
+    """Can this machine reach the model provider at all?
+
+    Worth having as a button: the balance endpoint answers on a laptop and comes
+    back «Access denied by security policy» inside the cloud function, and the
+    daily run cannot tell us whether generation works because it only calls the
+    model when a genuinely new programme appears — which can be weeks apart.
+    """
+    result = {}
+    client, reason = llm.open_client(cfg)
+    result['клиент'] = reason or 'создан'
+    if not client:
+        return result
+    balance = client.credits()
+    result['баланс'] = 'не прочитан' if balance is None else round(balance, 4)
+    try:
+        answer = client.chat([{'role': 'user', 'content': 'Ответь одним словом: работает'}])
+        result['вызов модели'] = 'ok: %s' % answer.strip()[:40]
+        result['стоимость'] = round(client.spent, 6)
+    except Exception as exc:
+        result['вызов модели'] = 'ОШИБКА: %s' % str(exc)[:200]
+    return result
 
 
 def handler(event, context):
     """Yandex Cloud Function entry point."""
     client_code = os.environ.get('CLIENT_CODE')
+    if isinstance(event, dict) and event.get('selftest'):
+        return {'statusCode': 200,
+                'body': json.dumps(selftest(load_config(client_code)), ensure_ascii=False)}
     try:
         result = run(client_code)
         return {'statusCode': 200, 'body': json.dumps(result, ensure_ascii=False)}
@@ -204,10 +287,11 @@ if __name__ == '__main__':
     parser.add_argument('--client', required=True)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--out', help='save the rendered feed to a local file')
+    parser.add_argument('--no-generate', action='store_true',
+                        help='skip the model entirely — a dry run that costs nothing')
     args = parser.parse_args()
 
-    from dotenv import load_dotenv
-    load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                             '..', '..', '..', 'Credentials.env')))
-    print(json.dumps(run(args.client, dry_run=args.dry_run, out_path=args.out),
+    llm.load_environment()
+    print(json.dumps(run(args.client, dry_run=args.dry_run, out_path=args.out,
+                         no_generate=args.no_generate),
                      ensure_ascii=False, indent=1))

@@ -5,7 +5,7 @@ Expects files named <offer_id>.jpg in the source folder. Reports which
 programs still have no image of their own.
 
     venv\\Scripts\\python.exe Scripts\\feeds\\feed_builder\\upload_images.py \\
-        --client demo --src "data/creatives"
+        --client demo --src "data\\creatives"
 """
 import os
 import re

@@ -7,14 +7,13 @@ join to. Leads carry the landing page of the form (bitrix_leads.landing_path),
 and `url_path` here is normalised exactly the same way, so «which programme did
 this lead come for» becomes a join instead of a manual mapping.
 
-The whole catalogue is published, not just what enters the feed: One client
+The whole catalogue is published, not just what enters the feed: the second client
 advertises retraining only, but leads arrive on refresher and mini-course pages
 too, and those still need a programme name.
 
 Connection settings follow the ETL convention: POSTGRES_HOST_<CLIENT> falling
 back to POSTGRES_HOST, one schema per client.
 """
-import os
 
 from history import connect, configured  # same credentials and SSL handling
 
@@ -73,6 +72,7 @@ def _int(value):
 
 def build_rows(client_code, today, programs, pages, offers, cfg):
     """One row per programme found on the site."""
+    import facts
     import feed as feed_builder
 
     in_feed = {o.get('key') for o in offers if o.get('key')}
@@ -80,6 +80,7 @@ def build_rows(client_code, today, programs, pages, offers, cfg):
     rows = []
     for key, program in programs.items():
         page = pages.get(key, {})
+        known = facts.extract(page, program, cfg)
         rows.append((
             key,
             str(program['id']),
@@ -88,8 +89,8 @@ def build_rows(client_code, today, programs, pages, offers, cfg):
             base + key,
             _int(program.get('price')),
             _int(program.get('oldprice')),
-            _int(feed_builder.hours_of(program, page)),
-            feed_builder.kind_of(program),
+            _int(known['hours']),
+            known['kind'],
             feed_builder.category_of(program, cfg),
             ','.join(program.get('sections', [])),
             key in in_feed,

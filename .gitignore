@@ -3,7 +3,7 @@ __pycache__/
 .venv/
 venv/
 .env
-feed_robot/clients.json
+feed_robot/clients_config.json
 *.zip
 *.crt
 data/

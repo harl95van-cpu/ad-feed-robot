@@ -6,19 +6,52 @@ from xml.sax.saxutils import escape
 from collections import Counter
 
 import clusters
+import facts as facts_rules
+import texts
+
+# Re-exported so the builder signatures below can default to it without
+# reaching into another module in every call.
+DEFAULT_KIND = facts_rules.DEFAULT_KIND
 
 EMOJI = re.compile('[\U0001F000-\U0001FAFF←-⯿️‍]+')
 STOP_TAIL = {'и', 'в', 'с', 'по', 'на', 'для', 'от', 'к', 'о', 'об', 'при', 'у', 'за', 'из'}
+# Everything a cut may leave at the end of a phrase. The em dash and the en dash
+# are the ones that were missing: the sites write «—», the code stripped «-».
+DEBRIS = ' ,.-—–:;'
+
+
+def _trim_tail(s):
+    """Drop whatever is left dangling at the end of a shortened phrase.
+
+    Used both after cutting to a length and after stripping a search-engine
+    tail: «Психолог-консультант переподготовка с дипломом» loses its tail and is
+    left ending on a preposition.
+    """
+    words = s.rstrip(DEBRIS).split(' ')
+    while len(words) > 1 and (words[-1].lower().strip(',.') in STOP_TAIL
+                              or words[-1].strip(DEBRIS) == ''):
+        words.pop()
+    return ' '.join(words).rstrip(DEBRIS)
 
 
 def _cut(s, n):
-    """Trim to n chars on a word boundary, dropping a dangling preposition."""
+    """Trim to n chars on a word boundary, leaving a phrase that reads.
+
+    Three kinds of leftover, all of which reached live ads: a dangling
+    preposition, a dangling dash — «Кадастровый инженер дистанционно —» — and
+    half a bracket, «Няня (работник по уходу и присмотру». The dash cases got
+    through for years because the tidy-up stripped the ASCII hyphen and the site
+    writes an em dash.
+    """
     if len(s) <= n:
         return s
-    words = s[:n].rsplit(' ', 1)[0].rstrip(' ,.-').split(' ')
-    while len(words) > 1 and words[-1].lower().strip(',.') in STOP_TAIL:
-        words.pop()
-    return ' '.join(words).rstrip(' ,.-')
+    out = _trim_tail(s[:n].rsplit(' ', 1)[0])
+    # An opening bracket with nothing to close it: drop the fragment it started.
+    if out.count('(') > out.count(')'):
+        out = out[:out.rfind('(')]
+    if out.count('«') > out.count('»'):
+        out = out[:out.rfind('«')]
+    return out.rstrip(DEBRIS)
 
 
 def strip_forbidden(text, phrases):
@@ -40,27 +73,26 @@ def strip_forbidden(text, phrases):
     return text.strip(' ,;:-')
 
 
-def hours_of(program, page):
-    for h in program['hints']:
-        m = re.match(r'(\d+)', h)
-        if m:
-            return m.group(1)
-    m = re.search(r'\((\d+)\s*ч', page.get('h1', ''))
-    return m.group(1) if m else ''
-
-
-def kind_of(program):
-    for h in program['hints']:
-        if not h[:1].isdigit():
-            return h
-    return 'Переподготовка'
+# A page title is written for search engines, so it carries a tail the ad does
+# not want: «Кадастровый инженер дистанционно — обучение», «Педагог раннего
+# развития — профпереподготовка». Cutting the label short used to hide these by
+# accident; once the label had room to keep them, they showed up in live ads.
+SEO_TAIL = re.compile(
+    r'\s*[—–-]\s*(переподготовка|проф\w*|повышение|обучение|курсы?|диплом)\b.*$'
+    r'|[\s,]+(онлайн|дистанционно)\s*$'
+    # «Учитель логопед обучение», «Нейропсихология взрослых обучение с дипломом
+    # за 8 месяцев» — the tail is for the search engine, not for the reader.
+    # Only «обучение» and «диплом» start such a tail: «курс» is usually the head
+    # of the phrase, and cutting there left «Дистанционный» and «Онлайн» alone.
+    # The lookbehind keeps a short label from being eaten whole.
+    r'|(?<=.{8})\s+(обучение|диплом\w*)\b.*$', re.I)
 
 
 def label_of(page, source='title'):
     """Short marketing label for the course.
 
-    `title`     — the part of <title> before the colon.
-    `h1_quoted` — the «…» phrase inside <h1> (for sites whose <title> is a
+    `title`     — the part of <title> before the colon (demo-academy.example).
+    `h1_quoted` — the «…» phrase inside <h1> (second-academy.example, whose <title> is a
                   keyword-stuffed SEO string).
     """
     quoted = re.search(r'«([^»]+)»', page.get('h1', ''))
@@ -69,30 +101,69 @@ def label_of(page, source='title'):
     else:
         title = page.get('title', '').split('|')[0].strip()
         label = title.split(':')[0].strip() if ':' in title else title
-        label = re.sub(r'\s*[—-]\s*(переподготовка|повышение).*$', '', label, flags=re.I).strip()
+        label = _trim_tail(SEO_TAIL.sub('', label).strip())
         if (not label or len(label) > 70) and quoted:
             label = quoted.group(1)
     return re.sub(r'\s+', ' ', label).strip(' .«»')
 
 
-def build_name(page, program, phrases, label_source='title'):
+NAME_TEMPLATES = {
+    'Повышение': '%s. Курс повышения квалификации',
+    'Профессиональное обучение': 'Обучение: %s. Документ о квалификации',
+    '': 'Обучение: %s. Диплом!',
+}
+
+
+# The catalogue titles these came from are SEO strings that already say
+# «обучение»: «Кризисный психолог обучение на базе», «Обучение КПТ для
+# психологов онлайн». Adding the template's own opening to those produced
+# «Обучение: Обучение КПТ…» in live ads.
+SAYS_TRAINING = re.compile(r'\bобучени\w*', re.I)
+TEMPLATE_LEAD = 'Обучение: '
+
+
+def _template_for(kind):
+    for prefix, template in NAME_TEMPLATES.items():
+        if prefix and kind.startswith(prefix):
+            return template
+    return NAME_TEMPLATES['']
+
+
+def build_name(page, program, phrases, label_source='title', kind=DEFAULT_KIND):
+    """The pre-model title rules, kept as the fallback.
+
+    The label budget is derived from the template rather than written down: the
+    old fixed numbers were sized for the feed format's 100 characters, which is
+    how titles 72 characters long reached live ads and got cut mid-word.
+
+    The programme kind is passed in rather than worked out here: it comes from
+    the client config like every other fact.
+    """
     label = strip_forbidden(label_of(page, label_source), phrases)
-    kind = kind_of(program)
-    if kind.startswith('Повышение'):
-        name = '%s. Курс повышения квалификации' % _cut(label, 44)
-    elif kind.startswith('Профессиональное обучение'):
-        name = 'Обучение: %s. Документ о квалификации' % _cut(label, 38)
-    else:
-        name = 'Обучение: %s. Диплом!' % _cut(label, 44)
-    return re.sub(r'\s+', ' ', name).strip()
+    template = _template_for(kind)
+    if template.startswith(TEMPLATE_LEAD) and SAYS_TRAINING.search(label):
+        # Dropping the opening also hands its ten characters back to the name.
+        template = template[len(TEMPLATE_LEAD):]
+    # No room is set aside for the « (640 ч)» the dedupe pass may add: only
+    # duplicates ever get it, and charging every title eight characters cost
+    # «Бухгалтерский и налоговый учет» its noun.
+    name = template % _cut(label, texts.TITLE_LIMIT - len(template.replace('%s', '')))
+    return texts.tidy(re.sub(r'\s+', ' ', name).strip())
 
 
-MAX_DESCRIPTION = 85
+# The banner clamps the description to two lines and wraps on word boundaries,
+# so the real ceiling is well under what the feed format allows.
+MAX_DESCRIPTION = texts.TEXT_LIMIT
 
 # Direct cuts the description mid-word in the banner, so it has to be short and
 # front-loaded: what the course is, then the standing offer. The document name
 # follows the programme type — retraining gives a diploma, refresher courses an
 # udostoverenie, vocational training a svidetelstvo.
+#
+# This is the default for a Russian further-education provider. A client whose
+# programmes issue something else — or a project in another field that issues
+# nothing at all — overrides it with a `documents` block in the config, so the
+# word «Диплом» never has to be edited out of the code.
 KIND_WORDING = {
     'Переподготовка': ('Переподготовка', 'Диплом'),
     'Профессиональная переподготовка': ('Переподготовка', 'Диплом'),
@@ -100,14 +171,27 @@ KIND_WORDING = {
     'Профессиональное обучение': ('Профобучение', 'Свидетельство'),
 }
 
+
+def wording_for(kind, cfg=None):
+    """How this programme kind is named, and what document it issues."""
+    table = (cfg or {}).get('documents')
+    if table:
+        pair = table.get(kind) or table.get(DEFAULT_KIND) or {}
+        return pair.get('prefix', kind), pair.get('document', '')
+    return KIND_WORDING.get(kind, KIND_WORDING[DEFAULT_KIND])
+
 # Standing offer at the end of every description — differs per client.
-DEFAULT_OFFER = 'Рассрочка до 36 мес.'
+DEFAULT_OFFER = 'Рассрочка 12 мес.'
 
 
 # Ad-title decorations we strip to get back to the bare course name.
 NAME_LEAD = re.compile(
     r'^(дистанционное обучение|онлайн[- ]обучение|обучение онлайн|'
-    r'дистанционный курс|онлайн[- ]курс|курсы|курс|обучение)\s*:\s*', re.I)
+    r'дистанционный курс|онлайн[- ]курс|курсы|курс|обучение|'
+    # The description prefixes its own kind, so a name that already opens with
+    # one produced «Переподготовка: Переподготовка: Педагог-хореограф».
+    r'профессиональная переподготовка|переподготовка|'
+    r'повышение квалификации|профобучение)\s*:\s*', re.I)
 NAME_TAIL = re.compile(
     r'\s*[.,]?\s*((обучение|курс)\s*\d+\s*мес\w*\.?|'
     r'курс(ы)?( обучения)?( повышения квалификации)?( онлайн)?|'
@@ -117,8 +201,6 @@ NAME_TAIL = re.compile(
     r'свидетельство|онлайн|дистанционно)[!.]*\s*$',
     re.I)
 HOURS_TAIL = re.compile(r'\s*[.,]?\s*\(?\d+\s*(ч|час\w*|месяц\w*|мес\.?)\)?\s*$', re.I)
-# Room for the ", 640 ч" the dedupe pass may insert.
-HOURS_RESERVE = 8
 
 
 def course_label(name):
@@ -139,17 +221,55 @@ def course_label(name):
     return re.sub(r'\s{2,}', ' ', label).strip(' .,:!')
 
 
-def build_description(page, program, phrases, offer=DEFAULT_OFFER, label_source='title'):
-    prefix, document = KIND_WORDING.get(kind_of(program), KIND_WORDING['Переподготовка'])
+def build_description(page, program, phrases, offer=DEFAULT_OFFER,
+                      label_source='title', kind=DEFAULT_KIND, cfg=None):
+    prefix, document = wording_for(kind, cfg)
     label = course_label(program.get('offer_name') or '') or label_of(page, label_source)
     label = strip_forbidden(EMOJI.sub('', label), phrases).strip(' .')
-    tail = '%s %s!' % (offer.rstrip(), document)
-    budget = MAX_DESCRIPTION - HOURS_RESERVE
+    tail = ('%s %s!' % (offer.rstrip(), document)) if document else offer.rstrip()
+    # Same reasoning as in build_name: the hours are inserted only into
+    # duplicates, and _dedupe_descriptions refuses to do it when the result
+    # would overflow. Reserving room in every description just shortens it.
+    budget = MAX_DESCRIPTION
 
     with_prefix = '%s: %s. %s' % (prefix, label, tail)
     if len(with_prefix) <= budget:
-        return with_prefix
-    return '%s. %s' % (_cut(label, budget - len(tail) - 2), tail)
+        return texts.tidy(with_prefix)
+    return texts.tidy('%s. %s' % (_cut(label, budget - len(tail) - 2), tail))
+
+
+# The marks _dedupe_names leaves on a title it had to make unique.
+DEDUPED = re.compile(r'\((?:\d+\s*ч|id\s*\d+)\)\s*$')
+
+INSTALMENT = re.compile(r'рассрочк', re.I)
+
+
+def clean_sales_notes(stored):
+    """Drop a special-offer line that repeats the instalment plan.
+
+    Two offers still carried «Рассрочка на 24 и 36 месяцев» inherited from the
+    client's own feed. The instalment terms change and are configured in one
+    place now; a second, stale copy of them in another field is how a wrong
+    promise reaches a live ad.
+    """
+    if stored and INSTALMENT.search(stored):
+        return None
+    return stored
+
+
+def price_is_on_the_page(price, page):
+    """Does the figure we are about to advertise appear on the landing page?
+
+    Direct requires the price in the ad to match the page, and the two can drift
+    apart on their own: a listing caches an old figure, a client introduces
+    tariffs and the card starts showing «от …», a promotion ends. Nothing here
+    changes the feed — a mismatch is reported so a person can look.
+    """
+    body = page.get('body') or ''
+    if not body or not price:
+        return True
+    grouped = '{:,}'.format(int(price)).replace(',', ' ')
+    return grouped in body or str(int(price)) in body
 
 
 def category_of(program, cfg):
@@ -167,11 +287,13 @@ def picture_of(offer_id, cid, cfg, images, state, cluster_key=None):
     `cluster` — the shared creative of its micro-category
     `stored`  — the picture the client's own feed used last time
 
-    a client puts `cluster` above `stored` because the client's originals were
-    WebP and risky at moderation; a client keeps its own JPG/PNG photos, so there
+    the first client puts `cluster` above `stored` because the client's originals were
+    WebP and risky at moderation; the second client keeps its own JPG/PNG photos, so there
     `stored` wins and generated art only fills the gaps.
     """
-    base = 'https://storage.yandexcloud.net/%s/%s' % (cfg['bucket'], cfg['image_prefix'])
+    # Same store as the feed itself, so the endpoint is configured in one place.
+    import storage
+    base = storage.public_url(cfg['bucket'], cfg['image_prefix'])
     known = state.get('offers', {}).get(offer_id, {}).get('picture')
     cluster = ('cluster_%s' % cluster_key) if cluster_key else None
 
@@ -196,37 +318,145 @@ def picture_of(offer_id, cid, cfg, images, state, cluster_key=None):
     return (pool[0] if pool else ''), 'fallback'
 
 
-def build_offers(programs, pages, cfg, images, state):
+class Generator(object):
+    """Writes ad copy for offers that do not have any yet.
+
+    `client` may be None — no key, no credit, generation switched off — and the
+    run then falls back to the rules below, which is exactly what it did before
+    generation existed.
+    """
+
+    def __init__(self, client=None, retries=2, reason=''):
+        self.client = client
+        self.retries = retries
+        self.reason = reason
+        self.exhausted = False
+        self.stats = Counter()
+
+
+def _legacy_copy(page, program, cfg, phrases, label_source, offer_line,
+                 kind=DEFAULT_KIND):
+    """The rules the feed used before the model — kept as the safety net."""
+    def build():
+        name = strip_forbidden(
+            build_name(page, program, phrases, label_source, kind), phrases)
+        text = build_description(page, dict(program, offer_name=name), phrases,
+                                 offer_line, label_source, kind, cfg)
+        return name, text
+    return build
+
+
+def _copy_for(program, page, prev, cfg, generator, legacy, known=None):
+    """Decide where this offer's copy comes from. Returns (name, text, ad).
+
+    The order matters and is the whole point of the caching rule: a stored ad is
+    reassembled with today's price, an offer that predates generation keeps the
+    copy it already has, and only a genuinely new offer costs a model call.
+    Rewriting a live offer would reset the statistics Direct has accumulated on
+    it, which is far more expensive than the call itself.
+    """
+    price = program['price']
+    stored_ad = prev.get('ad')
+    if stored_ad and stored_ad.get('name'):
+        title, text, _ = texts.assemble(stored_ad, price, cfg)
+        generator.stats['cached'] += 1
+        return title, text, stored_ad
+    if prev.get('name'):
+        name = prev['name']
+        # One exception to leaving stored copy alone: a title over the display
+        # limit is already broken — the ad shows two thirds of it and an
+        # ellipsis. Rebuilding it costs the offer's statistics but buys back a
+        # readable ad, which is the whole point of the statistics.
+        fresh = None
+        if len(name) > texts.TITLE_LIMIT or texts.artefacts(name):
+            # Over the limit, or cut in the wrong place — «Кадастровый инженер
+            # дистанционно —. Диплом!». Either way the ad is already spoiled, so
+            # the statistics a rebuild costs are worth less than the repair.
+            fresh = legacy()[0]
+        elif not DEDUPED.search(name):
+            # The same title cut short by a budget that has since been relaxed:
+            # «Обучение: Государственное. Диплом!» where the rules now yield
+            # «Обучение: Государственное и муниципальное управление». Only a
+            # title that starts the same way and got longer qualifies, so this
+            # repairs what we truncated and leaves everything else alone.
+            #
+            # A title the dedupe pass shaped is excluded, and that exclusion is
+            # what makes the repair terminate. Dedupe trades «. Диплом!» for
+            # « (540 ч)» to tell two identical titles apart, leaving a name one
+            # character shorter than the rules produce — so without this guard
+            # the repair and the dedupe undo each other on every single run,
+            # rewriting those offers daily and resetting their statistics daily.
+            candidate = legacy()[0]
+            if len(candidate) > len(name) and candidate[:12] == name[:12]:
+                fresh = candidate
+        if fresh:
+            name = fresh
+            generator.stats['reshaped'] += 1
+        text = build_description(page, dict(program, offer_name=name),
+                                 cfg.get('forbidden_phrases', []),
+                                 cfg.get('offer_tail', DEFAULT_OFFER),
+                                 cfg.get('label_source', 'title'),
+                                 (known or {}).get('kind', DEFAULT_KIND), cfg)
+        generator.stats['kept'] += 1
+        return name, text, None
+    if generator.client and not generator.exhausted:
+        known = dict(known or facts_rules.extract(page, program, cfg))
+        known['mode_hint'] = cfg.get('mode_overrides', {}).get(program['id'], '')
+        title, text, ad, meta = texts.generate(known, cfg, price, generator.client,
+                                               legacy, generator.retries)
+        generator.stats[meta['source']] += 1
+        generator.stats['attempts'] += meta['attempts']
+        if meta.get('exhausted'):
+            # The ceiling is per run, not per offer: once it is hit every
+            # remaining programme takes the deterministic path without trying.
+            generator.exhausted = True
+        return title, text, ad
+    name, text = legacy()
+    generator.stats['legacy'] += 1
+    return name, text, None
+
+
+def build_offers(programs, pages, cfg, images, state, generator=None):
     """Turn crawled programs into offer dicts, carrying over stored fields."""
     phrases = cfg.get('forbidden_phrases', [])
     offer_line = cfg.get('offer_tail', DEFAULT_OFFER)
     label_source = cfg.get('label_source', 'title')
-    # Some clients advertise only part of their catalogue (a client — retraining
+    # Some clients advertise only part of their catalogue (the second client — retraining
     # only), so refresher courses and mini-courses never enter the feed.
     include = cfg.get('include_kinds')
     stored = state.get('offers', {})
+    generator = generator or Generator()
     offers = []
     skipped = []
+    mismatched = []
     for key, program in programs.items():
-        if include and kind_of(program) not in include:
+        page = pages.get(key, {})
+        # Every fact this offer needs, read once from the client's rules. The
+        # kind used to be worked out separately here, in build_name and in
+        # build_description, which meant the config could be edited without the
+        # robot's behaviour following — and the extraction check would report a
+        # kind the feed never actually used.
+        known = facts_rules.extract(page, program, cfg)
+        if include and known['kind'] not in include:
             continue
         # A price is mandatory in YML; a card without one cannot be advertised.
         if not program.get('price') or not program.get('oldprice'):
             skipped.append((program['id'], program.get('name', ''), key))
             continue
-        page = pages.get(key, {})
         oid = program['id']
         prev = stored.get(oid, {})
         # Keep the category the client's own feed assigned; the section mapping
         # is only a fallback for programs we are seeing for the first time.
         cid = prev.get('categoryId') or category_of(program, cfg)
         cluster_key = clusters.assign('%s %s' % (label_of(page, label_source), program['name']))
-        # The ad title is the cleanest source for the course name, so build it
-        # first and let the description reuse it.
-        name = strip_forbidden(
-            prev.get('name') or build_name(page, program, phrases, label_source), phrases)
-        program = dict(program, offer_name=name)
+        legacy = _legacy_copy(page, program, cfg, phrases, label_source, offer_line,
+                              known['kind'])
+        name, description, ad = _copy_for(program, page, prev, cfg, generator,
+                                          legacy, known)
         picture = picture_of(oid, cid, cfg, images, state, cluster_key)
+        if not price_is_on_the_page(program['price'], page):
+            generator.stats['price_mismatch'] += 1
+            mismatched.append((oid, program['price'], key))
         offers.append(dict(
             key=key,
             id=oid,
@@ -236,15 +466,16 @@ def build_offers(programs, pages, cfg, images, state):
             url=cfg['base_url'] + key,
             picture=picture[0],
             picture_source=picture[1],
-            description=build_description(page, program, phrases, offer_line, label_source),
+            description=description,
+            ad=ad,
             price=program['price'],
             oldprice=program['oldprice'],
             custom_label_0=prev.get('custom_label_0', 'False'),
             custom_label_1=prev.get('custom_label_1', 'False'),
             custom_score=prev.get('custom_score'),
-            sales_notes=prev.get('sales_notes'),
-            hours=hours_of(program, page),
-            kind=kind_of(program),
+            sales_notes=clean_sales_notes(prev.get('sales_notes')),
+            hours=known['hours'],
+            kind=known['kind'],
             cluster=cluster_key,
             has_own_image=oid in images,
             has_cluster_image=('cluster_%s' % cluster_key) in images,
@@ -263,6 +494,10 @@ def build_offers(programs, pages, cfg, images, state):
 
     _dedupe_names(offers)
     _dedupe_descriptions(offers)
+    if mismatched:
+        print('      цена не найдена на странице программы: %d' % len(mismatched))
+        for oid, price, key in mismatched[:5]:
+            print('        %s %s ₽ %s' % (oid, price, key))
     if skipped:
         print('      без цены, в фид не попали: %d' % len(skipped))
         for oid, nm, key in skipped[:10]:
@@ -271,15 +506,23 @@ def build_offers(programs, pages, cfg, images, state):
 
 
 def _dedupe_names(offers):
+    """Two programmes can end up with the same title; the hours tell them apart.
+
+    The budget is the display limit, not the feed format's 100 characters —
+    padding a title to 96 only means the ad shows two thirds of it and an
+    ellipsis.
+    """
+    limit = texts.TITLE_LIMIT
     counts = Counter(o['name'] for o in offers)
     for o in offers:
         if counts[o['name']] > 1:
             suffix = ' (%s ч)' % o['hours'] if o.get('hours') else ' (id %s)' % o['id']
-            o['name'] = _cut(o['name'], 96 - len(suffix)) + suffix
+            o['name'] = _cut(o['name'], limit - len(suffix)) + suffix
     still = {n for n, c in Counter(o['name'] for o in offers).items() if c > 1}
     for o in offers:
         if o['name'] in still:
-            o['name'] = _cut(o['name'], 84 - len(o['id'])) + ' (id %s)' % o['id']
+            suffix = ' (id %s)' % o['id']
+            o['name'] = _cut(o['name'], limit - len(suffix)) + suffix
 
 
 def _dedupe_descriptions(offers):
@@ -288,8 +531,12 @@ def _dedupe_descriptions(offers):
     counts = Counter(o['description'] for o in offers)
     for o in offers:
         if counts[o['description']] > 1 and o.get('hours'):
-            o['description'] = o['description'].replace(
+            longer = o['description'].replace(
                 '. Рассрочка', ', %s ч. Рассрочка' % o['hours'], 1)
+            # Telling two offers apart is not worth pushing the line past the
+            # point where Direct truncates it.
+            if len(longer) <= texts.TEXT_LIMIT:
+                o['description'] = longer
 
 
 def validate(offers, cfg):
@@ -314,6 +561,12 @@ def validate(offers, cfg):
                             % (o['id'], o['oldprice'], o['price']))
         if len(o['name']) > 100:
             problems.append('оффер %s: имя длиннее 100 символов' % o['id'])
+        # Cosmetic, so it does not block publishing — but it must never again be
+        # something only a screenshot of a live ad reveals.
+        for field in ('name', 'description'):
+            for found in texts.artefacts(o.get(field, '')):
+                problems.append('оффер %s: %s в поле %s — %s'
+                                % (o['id'], found, field, o[field][:60]))
         if o.get('sales_notes') and len(o['sales_notes']) > 50:
             problems.append('оффер %s: sales_notes длиннее 50 символов' % o['id'])
     return problems

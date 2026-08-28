@@ -10,7 +10,6 @@ state the weekly job reads.
 """
 import os
 import sys
-import json
 import argparse
 import datetime
 import xml.etree.ElementTree as ET
