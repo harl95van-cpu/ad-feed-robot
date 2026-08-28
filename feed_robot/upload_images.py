@@ -49,9 +49,8 @@ def main():
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
 
-    from dotenv import load_dotenv
-    load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                             '..', '..', '..', 'Credentials.env')))
+    import llm
+    llm.load_environment()
 
     cfg = load_config(args.client)
     good, bad = collect(args.src)

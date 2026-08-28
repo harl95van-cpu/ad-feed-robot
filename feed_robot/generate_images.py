@@ -125,9 +125,9 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='only print prompts')
     args = parser.parse_args()
 
-    from dotenv import load_dotenv
+    import llm
+    llm.load_environment()
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-    load_dotenv(os.path.join(root, 'Credentials.env'))
     api_key = os.environ['OPENROUTER_API_KEY']
 
     out_dir = args.out if os.path.isabs(args.out) else os.path.join(root, args.out)

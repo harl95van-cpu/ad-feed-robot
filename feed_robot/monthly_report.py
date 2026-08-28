@@ -105,9 +105,8 @@ def main():
     parser.add_argument('--out', help='куда положить markdown')
     args = parser.parse_args()
 
-    from dotenv import load_dotenv
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-    load_dotenv(os.path.join(root, 'Credentials.env'))
+    import llm
+    llm.load_environment()
 
     month = args.month or previous_month()
     md, count = build(args.client, month)
