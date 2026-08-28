@@ -118,6 +118,18 @@ def extract(page, program, cfg):
     return out
 
 
+def value_of(rules, page, program):
+    """One configured value, pulled out by the same machinery as the facts.
+
+    Used for the things that are not facts about the programme but about the
+    page — the price it states — so that a client whose site keeps two
+    disagreeing prices describes where the real one lives in the config
+    instead of growing a second extractor in the feed builder.
+    """
+    value, _ = _apply(rules or [], _haystacks(page, program))
+    return value
+
+
 def missing(facts, required=('profession',)):
     """Fields worth asking the model about — everything else is optional."""
     return [f for f in required if not facts.get(f)]

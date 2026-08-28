@@ -13,6 +13,18 @@ ENDPOINT = os.environ.get('S3_ENDPOINT') or 'https://storage.yandexcloud.net'
 REGION = os.environ.get('S3_REGION') or 'ru-central1'
 
 
+def configured():
+    """Are the store's credentials present at all?
+
+    Only a dry run may proceed without them: it writes the feed to a local file
+    and never needs the published url or the state. A real run without a store
+    would build a feed nobody can reach and forget every programme it has
+    already written copy for.
+    """
+    return bool(os.environ.get('S3_ACCESS_KEY_ID')
+                and os.environ.get('S3_SECRET_ACCESS_KEY'))
+
+
 def client():
     return boto3.client(
         's3',

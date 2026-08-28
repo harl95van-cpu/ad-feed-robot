@@ -88,13 +88,19 @@ SEO_TAIL = re.compile(
     r'|(?<=.{8})\s+(обучение|диплом\w*)\b.*$', re.I)
 
 
-def label_of(page, source='title'):
+def label_of(page, source='title', program=None):
     """Short marketing label for the course.
 
     `title`     — the part of <title> before the colon (demo-academy.example).
     `h1_quoted` — the «…» phrase inside <h1> (second-academy.example, whose <title> is a
                   keyword-stuffed SEO string).
+    `name`      — the catalogue's own name for the programme (third-academy.example,
+                  where <title> is a keyword string written for search and <h1>
+                  repeats the programme kind after a colon, while the store
+                  card holds the bare speciality).
     """
+    if source == 'name' and (program or {}).get('name'):
+        return re.sub(r'\s+', ' ', program['name']).strip(' .«»')
     quoted = re.search(r'«([^»]+)»', page.get('h1', ''))
     if source == 'h1_quoted' and quoted:
         label = quoted.group(1)
@@ -122,14 +128,25 @@ SAYS_TRAINING = re.compile(r'\bобучени\w*', re.I)
 TEMPLATE_LEAD = 'Обучение: '
 
 
-def _template_for(kind):
-    for prefix, template in NAME_TEMPLATES.items():
+def _template_for(kind, cfg=None):
+    """The title wording for this programme kind.
+
+    Overridable from the config for the same reason `documents` is: the wording
+    that fits one catalogue starves another. «%s. Курс повышения квалификации»
+    spends 29 of the 56 characters on itself, and on a catalogue of long
+    speciality names that is what cuts «Сестринское дело в косметологии» down
+    to «Сестринское дело» — three programmes with one title, told apart in the
+    live ad by an id. A client whose names are long says so here instead.
+    """
+    table = (cfg or {}).get('name_templates') or NAME_TEMPLATES
+    for prefix, template in table.items():
         if prefix and kind.startswith(prefix):
             return template
-    return NAME_TEMPLATES['']
+    return table.get('', NAME_TEMPLATES[''])
 
 
-def build_name(page, program, phrases, label_source='title', kind=DEFAULT_KIND):
+def build_name(page, program, phrases, label_source='title', kind=DEFAULT_KIND,
+               cfg=None):
     """The pre-model title rules, kept as the fallback.
 
     The label budget is derived from the template rather than written down: the
@@ -139,8 +156,8 @@ def build_name(page, program, phrases, label_source='title', kind=DEFAULT_KIND):
     The programme kind is passed in rather than worked out here: it comes from
     the client config like every other fact.
     """
-    label = strip_forbidden(label_of(page, label_source), phrases)
-    template = _template_for(kind)
+    label = strip_forbidden(label_of(page, label_source, program), phrases)
+    template = _template_for(kind, cfg)
     if template.startswith(TEMPLATE_LEAD) and SAYS_TRAINING.search(label):
         # Dropping the opening also hands its ten characters back to the name.
         template = template[len(TEMPLATE_LEAD):]
@@ -224,7 +241,8 @@ def course_label(name):
 def build_description(page, program, phrases, offer=DEFAULT_OFFER,
                       label_source='title', kind=DEFAULT_KIND, cfg=None):
     prefix, document = wording_for(kind, cfg)
-    label = course_label(program.get('offer_name') or '') or label_of(page, label_source)
+    label = (course_label(program.get('offer_name') or '')
+             or label_of(page, label_source, program))
     label = strip_forbidden(EMOJI.sub('', label), phrases).strip(' .')
     tail = ('%s %s!' % (offer.rstrip(), document)) if document else offer.rstrip()
     # Same reasoning as in build_name: the hours are inserted only into
@@ -280,12 +298,13 @@ def category_of(program, cfg):
     return ''
 
 
-def picture_of(offer_id, cid, cfg, images, state, cluster_key=None):
+def picture_of(offer_id, cid, cfg, images, state, cluster_key=None, program=None):
     """Resolve the offer picture by the client's configured priority.
 
     `own`     — a creative generated for this exact program
     `cluster` — the shared creative of its micro-category
     `stored`  — the picture the client's own feed used last time
+    `site`    — the picture the catalogue itself publishes for the programme
 
     the first client puts `cluster` above `stored` because the client's originals were
     WebP and risky at moderation; the second client keeps its own JPG/PNG photos, so there
@@ -304,6 +323,10 @@ def picture_of(offer_id, cid, cfg, images, state, cluster_key=None):
             return base + images[cluster], 'cluster'
         if source == 'stored' and known:
             return known, 'stored'
+        # A catalogue that publishes its own artwork needs no stand-in, and its
+        # picture is the one the visitor sees on the landing page.
+        if source == 'site' and (program or {}).get('picture'):
+            return program['picture'], 'site'
 
     pool = [o.get('picture') for o in state.get('offers', {}).values()
             if o.get('picture') and o.get('categoryId') == cid]
@@ -339,7 +362,7 @@ def _legacy_copy(page, program, cfg, phrases, label_source, offer_line,
     """The rules the feed used before the model — kept as the safety net."""
     def build():
         name = strip_forbidden(
-            build_name(page, program, phrases, label_source, kind), phrases)
+            build_name(page, program, phrases, label_source, kind, cfg), phrases)
         text = build_description(page, dict(program, offer_name=name), phrases,
                                  offer_line, label_source, kind, cfg)
         return name, text
@@ -424,6 +447,11 @@ def build_offers(programs, pages, cfg, images, state, generator=None):
     # Some clients advertise only part of their catalogue (the second client — retraining
     # only), so refresher courses and mini-courses never enter the feed.
     include = cfg.get('include_kinds')
+    # Where the catalogue and the landing page keep two different prices, the
+    # ad has to show the one the visitor will read, so the page wins wherever
+    # it states a price at all. Configured as rules, like every other thing
+    # this robot reads off a page.
+    price_rules = cfg.get('price_rules')
     stored = state.get('offers', {})
     generator = generator or Generator()
     offers = []
@@ -439,8 +467,15 @@ def build_offers(programs, pages, cfg, images, state, generator=None):
         known = facts_rules.extract(page, program, cfg)
         if include and known['kind'] not in include:
             continue
+        if price_rules:
+            stated = facts_rules.value_of(price_rules, page, program)
+            if stated:
+                program = dict(program, price=int(stated))
         # A price is mandatory in YML; a card without one cannot be advertised.
-        if not program.get('price') or not program.get('oldprice'):
+        # The crossed-out price is not: catalogues that do not run a standing
+        # discount have none, and demanding it there empties the feed.
+        if not program.get('price') or (cfg.get('require_oldprice', True)
+                                        and not program.get('oldprice')):
             skipped.append((program['id'], program.get('name', ''), key))
             continue
         oid = program['id']
@@ -448,12 +483,13 @@ def build_offers(programs, pages, cfg, images, state, generator=None):
         # Keep the category the client's own feed assigned; the section mapping
         # is only a fallback for programs we are seeing for the first time.
         cid = prev.get('categoryId') or category_of(program, cfg)
-        cluster_key = clusters.assign('%s %s' % (label_of(page, label_source), program['name']))
+        cluster_key = clusters.assign('%s %s'
+                                      % (label_of(page, label_source, program), program['name']))
         legacy = _legacy_copy(page, program, cfg, phrases, label_source, offer_line,
                               known['kind'])
         name, description, ad = _copy_for(program, page, prev, cfg, generator,
                                           legacy, known)
-        picture = picture_of(oid, cid, cfg, images, state, cluster_key)
+        picture = picture_of(oid, cid, cfg, images, state, cluster_key, program)
         if not price_is_on_the_page(program['price'], page):
             generator.stats['price_mismatch'] += 1
             mismatched.append((oid, program['price'], key))
@@ -553,7 +589,10 @@ def validate(offers, cfg):
         seen_urls.add(o['url'])
         if o['categoryId'] not in cats:
             problems.append('оффер %s: категория %r вне справочника' % (o['id'], o['categoryId']))
-        for field in ('name', 'url', 'picture', 'description', 'price', 'oldprice'):
+        required = ['name', 'url', 'picture', 'description', 'price']
+        if cfg.get('require_oldprice', True):
+            required.append('oldprice')
+        for field in required:
             if not o.get(field):
                 problems.append('оффер %s: пустое поле %s' % (o['id'], field))
         if o.get('price') and o.get('oldprice') and o['oldprice'] <= o['price']:
@@ -614,7 +653,9 @@ def render(offers, cfg):
         if o.get('sales_notes'):
             out.append(el('sales_notes', o['sales_notes']))
         out.append(el('price', o['price']))
-        out.append(el('oldprice', o['oldprice']))
+        # An empty <oldprice> is not «no discount», it is a malformed offer.
+        if o.get('oldprice'):
+            out.append(el('oldprice', o['oldprice']))
         out.append(el('currencyId', 'RUR'))
         out.append(el('custom_label_0', o.get('custom_label_0', 'False')))
         out.append(el('custom_label_1', o.get('custom_label_1', 'False')))

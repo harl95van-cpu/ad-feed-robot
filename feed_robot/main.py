@@ -141,17 +141,37 @@ def generation_summary(generator):
     return 'тексты: ' + ', '.join(parts)
 
 
-def run(client_code, dry_run=False, out_path=None, no_generate=False):
+def run(client_code, dry_run=False, out_path=None, no_generate=False,
+        no_storage=False):
     cfg = load_config(client_code)
     today = datetime.date.today().isoformat()
-    s3 = storage.client()
     bucket = cfg['bucket']
+    # A first look at a new client's catalogue happens before there is a bucket
+    # to put the feed in. Allowed for a dry run only, and loudly, because an
+    # empty state makes every programme look new.
+    if no_storage and not dry_run:
+        raise ValueError('--no-storage годится только для сухого прогона: '
+                         'настоящий запуск публикует фид и хранит состояние')
+    local_only = dry_run and (no_storage or not storage.configured())
+    s3 = None if local_only else storage.client()
 
-    state = storage.get_json(s3, bucket, cfg['state_key'], default={'offers': {}})
+    if local_only:
+        print('[!] хранилище не настроено: состояние пустое, картинки только с сайта')
+        state = {'offers': {}}
+    else:
+        state = storage.get_json(s3, bucket, cfg['state_key'], default={'offers': {}})
 
     print('[1/6] обход каталога %s' % cfg['base_url'])
     programs = crawler.crawl_catalog(cfg)
     print('      найдено программ: %d' % len(programs))
+    # A programme the crawler could not tie to a landing page keeps the
+    # catalogue's own url, which still works but is not the page the ads have
+    # been pointing at — worth a line rather than a silent substitution.
+    orphans = [p for p in programs.values() if p.get('landing_missing')]
+    if orphans:
+        print('      без своей посадочной, ведём на карточку каталога: %d' % len(orphans))
+        for p in orphans[:10]:
+            print('        %s %s' % (p['id'], p.get('name', '')[:60]))
 
     # Guard: a broken layout or a site outage must never wipe the live feed.
     guard = cfg.get('min_offers_guard', 0)
@@ -175,7 +195,7 @@ def run(client_code, dry_run=False, out_path=None, no_generate=False):
         print('      без описания с сайта: %d (возьмём шаблон)' % len(missed))
 
     print('[3/6] картинки из хранилища')
-    images = storage.list_images(s3, bucket, cfg['image_prefix'])
+    images = {} if local_only else storage.list_images(s3, bucket, cfg['image_prefix'])
     print('      своих картинок: %d' % len(images))
 
     print('[4/6] сборка офферов')
@@ -189,11 +209,19 @@ def run(client_code, dry_run=False, out_path=None, no_generate=False):
             print('        - %s' % p)
 
     diff = diff_against_state(offers, state)
+    # An offer wearing another programme's picture, which is the only case the
+    # report is allowed to call a stand-in. A catalogue that publishes its own
+    # artwork has no missing pictures at all, and saying otherwise every
+    # morning teaches people to ignore the line. How many still have no
+    # generated creative is the count printed just below.
     no_image = sum(1 for o in offers if o['available'] == 'true'
-                   and not o.get('has_own_image') and not o.get('has_cluster_image'))
+                   and o.get('picture_source') in (None, '', 'fallback'))
     own = sum(1 for o in offers if o.get('has_own_image'))
-    print('      картинок: %d персональных, %d по микрокатегориям, %d без своей'
-          % (own, len(offers) - own - no_image, no_image))
+    cluster = sum(1 for o in offers
+                  if not o.get('has_own_image') and o.get('has_cluster_image'))
+    site = sum(1 for o in offers if o.get('picture_source') == 'site')
+    print('      картинок: %d персональных, %d по микрокатегориям, %d с сайта, %d заглушек'
+          % (own, cluster, site, no_image))
     xml = feed_builder.render(offers, cfg)
 
     if out_path:
@@ -289,9 +317,12 @@ if __name__ == '__main__':
     parser.add_argument('--out', help='save the rendered feed to a local file')
     parser.add_argument('--no-generate', action='store_true',
                         help='skip the model entirely — a dry run that costs nothing')
+    parser.add_argument('--no-storage', action='store_true',
+                        help='dry run only: ignore the object store even if it is '
+                             'configured, and build from an empty state')
     args = parser.parse_args()
 
     llm.load_environment()
     print(json.dumps(run(args.client, dry_run=args.dry_run, out_path=args.out,
-                         no_generate=args.no_generate),
+                         no_generate=args.no_generate, no_storage=args.no_storage),
                      ensure_ascii=False, indent=1))

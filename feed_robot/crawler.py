@@ -7,6 +7,7 @@ the same id the client's own feed uses, which is what lets us match our data to
 the existing offers.
 """
 import re
+import json
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor
@@ -90,6 +91,208 @@ def _parse_listing(html, section, profile='dir_item'):
     return PROFILES[profile](html, section)
 
 
+# --- Tilda store ----------------------------------------------------------
+#
+# A Tilda catalogue ships no cards. The section page contains empty skeletons
+# and the products arrive in the browser from the store API, so a parser over
+# that markup finds nothing at all -- which the minimum-offers guard would then
+# report as «сайт лежит». This profile reads the same API the page reads.
+#
+# The two ids the API needs are printed into the page's own init call, so they
+# are discovered per section instead of being written into the config: a
+# section rebuilt in Tilda gets new ids, and a config holding the old ones
+# would crawl an empty catalogue every morning.
+TILDA_STORE_API = 'https://store.tildacdn.com/api/getproductslist/'
+TILDA_OPTIONS = re.compile(r"recid:'(\d+)',storepart:'(\d+)'")
+TILDA_SLICE = 500
+
+
+def _int_or_none(value):
+    """Tilda writes a price as «20000.0000» and an absent price as «»."""
+    digits = re.sub(r'\D', '', str(value or '').split('.')[0])
+    return int(digits) if digits else None
+
+
+def _first_picture(gallery):
+    """First image of the product gallery, which Tilda stores as JSON text."""
+    try:
+        items = json.loads(gallery or '[]')
+    except ValueError:
+        return ''
+    return (items[0].get('img') or '') if items else ''
+
+
+def _path_of(url, base_url):
+    return '/' + (url or '').replace(base_url, '').split('?')[0].strip('/')
+
+
+def crawl_tilda_store(session, base_url, section):
+    """Every product of one Tilda store section, through the store API."""
+    html = _get(session, base_url + section).text
+    found = TILDA_OPTIONS.search(html)
+    if not found:
+        raise RuntimeError('раздел %s: не нашли recid/storepart магазина Tilda' % section)
+    recid, part = found.group(1), found.group(2)
+    items, page = [], 1
+    while page <= MAX_PAGES:
+        url = ('%s?storepartuid=%s&recid=%s&c=1&getparts=true&getoptions=true'
+               '&slice=%d&size=%d' % (TILDA_STORE_API, part, recid, page, TILDA_SLICE))
+        data = _get(session, url).json()
+        products = data.get('products') or []
+        for p in products:
+            items.append(dict(
+                id=str(p.get('uid')),
+                url=_path_of(p.get('url'), base_url),
+                name=re.sub(r'\s+', ' ', p.get('title') or '').strip(),
+                price=_int_or_none(p.get('price')),
+                oldprice=_int_or_none(p.get('priceold')),
+                section=section,
+                picture=_first_picture(p.get('gallery')),
+                # The store keeps the duration and the speciality as labelled
+                # characteristics; handed over as hints they are reachable by
+                # the client's extraction rules like any other source.
+                hints=['%s: %s' % (c.get('title', ''), c.get('value', ''))
+                       for c in (p.get('characteristics') or [])],
+            ))
+        if not products or len(items) >= int(data.get('total') or 0):
+            break
+        page += 1
+    return items
+
+
+# Profiles that fetch their own listing instead of parsing the section page.
+SECTION_PROFILES = {'tilda_store': crawl_tilda_store}
+
+
+# --- Landing pages --------------------------------------------------------
+#
+# third-academy.example keeps two parallel catalogues: the store, which holds the prices
+# and the pictures, and a set of hand-built SEO pages, which is where the ads
+# have always pointed. Neither side links to the other, so the two are joined by
+# the programme name -- first on the url slug, then on the slug with the
+# transliteration flattened («psihiatriya» and «psikhiatriya» are the same word
+# spelled by two different tools), and only then on the heading of the few pages
+# still unclaimed, which is the one stage that costs requests.
+#
+# A programme that cannot be joined keeps its store url and is reported. An ugly
+# landing page is recoverable; ads pointing at another programme's page are not,
+# so every stage takes a candidate only when exactly one of them is left.
+MIN_SKELETON = 10
+_VOWELS = re.compile(r'[aeiouy]')
+_NAME_STOP = {'и', 'с', 'в', 'по', 'для', 'на', 'от', 'к', 'о', 'об', 'при', 'у', 'за', 'из', 'а'}
+
+
+def _slug(path):
+    return path.rstrip('/').rsplit('/', 1)[-1].strip('-').lower()
+
+
+def _store_slug(path):
+    """A product url is /<section>/tproduct/<recid>-<uid>-<slug>."""
+    slug = _slug(path)
+    m = re.match(r'^\d+-\d+-(.+)$', slug)
+    return (m.group(1) if m else slug).strip('-')
+
+
+def _skeleton(slug):
+    """What is left of a slug once the transliteration choices are gone."""
+    s = slug.lower().replace('kh', 'h').replace('ye', 'e').replace('yi', 'i').replace('iy', 'i')
+    s = re.sub(r'[^a-z0-9]+', '', s)
+    return re.sub(r'(.)\1+', r'\1', _VOWELS.sub('', s))
+
+
+def _name_key(text):
+    """A programme name reduced to its significant words.
+
+    The store calls it «Анестезиология и реаниматология» and the page heading
+    «Анестезиология - реаниматология: профессиональная переподготовка»; what
+    survives here is the same string in both.
+    """
+    text = (text or '').lower().replace('ё', 'е').split(':')[0]
+    text = re.sub(r'\(\d+\)', ' ', text)
+    text = re.sub(r'[^а-я0-9]+', ' ', text)
+    return ' '.join(w for w in text.split() if w not in _NAME_STOP)
+
+
+def sitemap_paths(session, base_url):
+    xml = _get(session, base_url + '/sitemap.xml').text
+    return [_path_of(u, base_url) for u in re.findall(r'<loc>([^<]+)</loc>', xml)]
+
+
+def _headings(session, base_url, paths, workers=6):
+    def grab(path):
+        try:
+            return path, parse_details(_get(session, base_url + path).text).get('h1', '')
+        except requests.RequestException:
+            return path, ''
+    with ThreadPoolExecutor(workers) as ex:
+        return dict(ex.map(grab, paths))
+
+
+def resolve_landings(items, base_url, session, overrides=None):
+    """Repoint every product at its SEO landing page where one exists."""
+    overrides = overrides or {}
+    sections = sorted(set(it['section'] for it in items), key=len, reverse=True)
+    pool = dict((section, []) for section in sections)
+    for path in sitemap_paths(session, base_url):
+        for section in sections:
+            if path.startswith(section) and path.rstrip('/') != section.rstrip('/'):
+                pool[section].append(path)
+                break
+
+    taken, resolved = set(), {}
+
+    def claim(item_id, path):
+        resolved[item_id] = path
+        taken.add(path)
+
+    for it in items:
+        if overrides.get(it['id']):
+            claim(it['id'], overrides[it['id']])
+
+    def candidates(stage, it):
+        free = [p for p in pool.get(it['section'], []) if p not in taken]
+        want = _store_slug(it['url'])
+        if stage == 'slug':
+            return [p for p in free if _slug(p) == want]
+        if stage == 'skeleton':
+            return [p for p in free if _skeleton(_slug(p)) == _skeleton(want)]
+        # A slug Tilda cut short -- «...-i-obsches» -- against the full one.
+        key = _skeleton(want)
+        if len(key) < MIN_SKELETON:
+            return []
+        out = []
+        for p in free:
+            other = _skeleton(_slug(p))
+            if other.startswith(key) or (len(other) >= MIN_SKELETON and key.startswith(other)):
+                out.append(p)
+        return out
+
+    for stage in ('slug', 'skeleton', 'prefix'):
+        for it in items:
+            if it['id'] in resolved:
+                continue
+            found = candidates(stage, it)
+            if len(found) == 1:
+                claim(it['id'], found[0])
+
+    left = [it for it in items if it['id'] not in resolved]
+    if left:
+        free = [p for section in sections for p in pool[section] if p not in taken]
+        headings = _headings(session, base_url, free)
+        for it in left:
+            found = [p for p in free if p not in taken and p.startswith(it['section'])
+                     and _name_key(headings.get(p, '')) == _name_key(it['name'])]
+            if len(found) == 1:
+                claim(it['id'], found[0])
+
+    for it in items:
+        if it['id'] in resolved:
+            it['url'] = resolved[it['id']]
+        else:
+            it['landing_missing'] = True
+    return items
+
+
 def _get(session, url, attempts=4):
     """GET with backoff — the site drops connections when crawled quickly."""
     last = None
@@ -108,7 +311,11 @@ def crawl_section(session, base_url, section, profile='dir_item'):
     """Walk one category section through its PAGEN_2 pagination.
 
     Sites that put every card on one page simply have no PAGEN links, so the
-    loop exits after the first request."""
+    loop exits after the first request. A profile that fetches its own listing
+    -- a catalogue rendered in the browser -- is dispatched before any of this.
+    """
+    if profile in SECTION_PROFILES:
+        return SECTION_PROFILES[profile](session, base_url, section)
     found, page = [], 1
     while page <= MAX_PAGES:
         url = base_url + section + ('' if page == 1 else '?PAGEN_2=%d' % page)
@@ -133,15 +340,22 @@ def crawl_catalog(cfg, sections=None):
     session = _session()
     base = cfg['base_url']
     profile = cfg.get('listing_profile', 'dir_item')
-    programs = {}
+    items = []
     for section in (cfg['sections'] if sections is None else sections):
-        for item in crawl_section(session, base, section, profile):
-            key = norm_url(item['url'], base)
-            if key in programs:
-                programs[key]['sections'].append(section)
-            else:
-                item['sections'] = [section]
-                programs[key] = item
+        items += crawl_section(session, base, section, profile)
+    # Resolved over the whole catalogue rather than per section: a programme is
+    # joined to a landing page only when it is the one candidate left, and the
+    # sections draw from a single pool of pages.
+    if cfg.get('landing_pages') == 'sitemap':
+        resolve_landings(items, base, session, cfg.get('landing_overrides'))
+    programs = {}
+    for item in items:
+        key = norm_url(item['url'], base)
+        if key in programs:
+            programs[key]['sections'].append(item['section'])
+        else:
+            item['sections'] = [item['section']]
+            programs[key] = item
     return programs
 
 
