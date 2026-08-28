@@ -7,7 +7,7 @@ join to. Leads carry the landing page of the form (bitrix_leads.landing_path),
 and `url_path` here is normalised exactly the same way, so «which programme did
 this lead come for» becomes a join instead of a manual mapping.
 
-The whole catalogue is published, not just what enters the feed: BRANDNAME
+The whole catalogue is published, not just what enters the feed: the second client
 advertises retraining only, but leads arrive on refresher and mini-course pages
 too, and those still need a programme name.
 

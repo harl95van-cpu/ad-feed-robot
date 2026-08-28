@@ -287,8 +287,8 @@ def picture_of(offer_id, cid, cfg, images, state, cluster_key=None):
     `cluster` — the shared creative of its micro-category
     `stored`  — the picture the client's own feed used last time
 
-    BRANDNAME puts `cluster` above `stored` because the client's originals were
-    WebP and risky at moderation; BRANDNAME keeps its own JPG/PNG photos, so there
+    the first client puts `cluster` above `stored` because the client's originals were
+    WebP and risky at moderation; the second client keeps its own JPG/PNG photos, so there
     `stored` wins and generated art only fills the gaps.
     """
     # Same store as the feed itself, so the endpoint is configured in one place.
@@ -421,7 +421,7 @@ def build_offers(programs, pages, cfg, images, state, generator=None):
     phrases = cfg.get('forbidden_phrases', [])
     offer_line = cfg.get('offer_tail', DEFAULT_OFFER)
     label_source = cfg.get('label_source', 'title')
-    # Some clients advertise only part of their catalogue (BRANDNAME — retraining
+    # Some clients advertise only part of their catalogue (the second client — retraining
     # only), so refresher courses and mini-courses never enter the feed.
     include = cfg.get('include_kinds')
     stored = state.get('offers', {})
