@@ -8,6 +8,41 @@ each one is here because something went wrong once.
 Google Ads feeds are a different format with different rules. This code does not
 target them, and making it do so is a rewrite, not a flag.
 
+## Before you build anything: ask
+
+This robot writes live advertising for someone else's business. Most of what it
+needs is not in the code and cannot be read off the site — it is the
+advertiser's to decide. **Ask these before the first build, not after it.**
+Answering them yourself produces a feed that looks finished and is wrong in ways
+only the client can see.
+
+1. **Which sections go into the ads?** A catalogue usually contains more than
+   the advertiser wants to pay for. Everything is not the answer, it is the
+   absence of one.
+2. **Which programmes are excluded?** By kind, by price floor, by anything else.
+3. **Which price is the real one** when the catalogue and the landing page
+   disagree — and they will. The ad must show what the landing page shows, so
+   this decides which source the config reads.
+4. **What may the copy promise?** The document a graduate receives, the
+   instalment terms, the wording of the ending. These are commitments the
+   advertiser makes, not phrasing to be invented.
+5. **What must the copy never say?** Every field has claims that are regulated
+   or simply untrue. Ask for the list; do not guess it.
+6. **Which categories does the feed need?** If there is an existing feed, its
+   categories are the answer until someone says otherwise.
+7. **Where is the current feed, if there is one?** Compare against it before
+   reporting anything — see below.
+
+If the answers are not available yet, build with explicit placeholders and say
+plainly which decisions are still open. Do not let a default become a decision
+by going unmentioned.
+
+**Compare with the existing feed first, not last.** A new feed that is missing
+programmes the client is already advertising cannot replace the old one, however
+clean it looks. Finding that at the end turns a finished job into an unfinished
+one. The first useful number is not "how many programmes did we collect" but
+"which programmes did the old feed have that we do not".
+
 ## The decisions, and why
 
 An agent that does not know the reasons will remove these as clutter.
@@ -112,7 +147,7 @@ verdict on the same nine pairs. Treat it as a signal.
 
 ## Adapting it to another site
 
-In this order:
+Once the questions above are answered, in this order:
 
 1. **`feed_robot/clients_config.example.json`** — start here. Catalogue
    sections, category reference list, the minimum-offers floor, banned phrases.
@@ -160,6 +195,12 @@ programme type issues, and the per-programme wording overrides.
 
 ## Do not
 
+- Decide on the advertiser's behalf what the ads may promise, which programmes
+  are advertised, or which of two prices is correct. Ask.
+- Report a catalogue as collected before comparing it with the feed already
+  running.
+- Show a defect as a known quirk instead of fixing it. If a title comes out with
+  a numeric id in it, that is a live ad, not a note for later.
 - Remove a guard because it looks like a redundant check.
 - Publish a feed that failed validation.
 - Commit `clients_config.json`, `.env`, or anything under `eval/` that holds
