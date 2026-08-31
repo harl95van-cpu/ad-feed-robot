@@ -19,6 +19,10 @@ import storage
 from main import load_config
 
 
+def _int(value):
+    return int(value) if value else None
+
+
 def text(node, tag):
     el = node.find(tag)
     return (el.text or '').strip() if el is not None else None
@@ -53,14 +57,18 @@ def main():
             continue
         offers[o.get('id')] = {
             'name': text(o, 'name'),
+            'description': text(o, 'description'),
             'categoryId': text(o, 'categoryId'),
             'url': text(o, 'url'),
             'picture': text(o, 'picture'),
-            'price': int(text(o, 'price')),
-            'oldprice': int(text(o, 'oldprice')),
+            'price': _int(text(o, 'price')),
+            # Not every catalogue runs a standing discount, so a feed without
+            # crossed-out prices is normal and must not break the seeding.
+            'oldprice': _int(text(o, 'oldprice')),
             'available': o.get('available'),
             'custom_label_0': text(o, 'custom_label_0') or 'False',
             'custom_label_1': text(o, 'custom_label_1') or 'False',
+            'custom_label_2': text(o, 'custom_label_2') or 'False',
             'custom_score': text(o, 'custom_score'),
             'sales_notes': text(o, 'sales_notes'),
             'gone_cycles': 0,

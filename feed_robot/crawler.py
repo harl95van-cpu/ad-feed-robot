@@ -348,6 +348,33 @@ def crawl_catalog(cfg, sections=None):
     # sections draw from a single pool of pages.
     if cfg.get('landing_pages') == 'sitemap':
         resolve_landings(items, base, session, cfg.get('landing_overrides'))
+    # Pages that exist only as landings. third-academy.example advertises whole directions
+    # -- pedagogy, nutrition, cosmetology -- that were never put into the store,
+    # so the catalogue crawl cannot see them at all. They are declared in the
+    # config and joined here, after the landing resolution, so that nothing
+    # repoints them: their url already is the page the ad points at.
+    for extra in (cfg.get('extra_programs') or []):
+        items.append(dict(
+            id=str(extra['id']),
+            url=extra['path'],
+            name=extra.get('name', ''),
+            # A fallback only: build_offers runs the client's price rules over
+            # the fetched page first, and the page wins wherever it states one.
+            price=extra.get('price'),
+            oldprice=extra.get('oldprice'),
+            section=extra.get('section', 'extra'),
+            picture=extra.get('picture'),
+            categoryId=extra.get('categoryId'),
+            hints=list(extra.get('hints') or []),
+        ))
+    # Pages the client does not advertise: a programme sold only as a store card
+    # with no landing of its own, or a specialty the catalogue duplicates under a
+    # second url. Matched on the resolved url, so a card repointed at its landing
+    # is judged by the page the ad would actually open.
+    drop = cfg.get('exclude_paths') or []
+    if drop:
+        items = [it for it in items
+                 if not any(frag in it['url'] for frag in drop)]
     programs = {}
     for item in items:
         key = norm_url(item['url'], base)

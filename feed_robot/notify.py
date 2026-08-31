@@ -129,6 +129,24 @@ def format_report(client, diff, feed_url, problems, no_image, texts_line=''):
     return '\n'.join(lines)
 
 
+def format_heartbeat(client, total, warnings=()):
+    """One line on a day when nothing changed.
+
+    The run used to say nothing at all when the catalogue had not moved, which
+    is right about the content and wrong about the reader: five quiet days look
+    exactly like a robot that died on the first of them. A line a day per client
+    is not noise, it is the difference between «всё в порядке» and «непонятно».
+
+    Anything worth a second glance — offers that fell back to the old rules, a
+    price the landing page does not show, a title that had to be rebuilt — is
+    appended, because those never trip the change report on their own.
+    """
+    line = '✅ <b>%s</b> — %d офферов, изменений нет' % (html.escape(client), total)
+    for warning in warnings:
+        line += '\n⚠️ %s' % html.escape(warning)
+    return line
+
+
 def format_alert(client, reason):
     return ('<b>Фид %s НЕ обновлён</b>\n\n%s\n\nСтарый фид оставлен без изменений.'
             % (html.escape(client), html.escape(reason)))

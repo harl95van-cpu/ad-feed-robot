@@ -74,6 +74,9 @@ def build_state(offers, today):
         'updated_at': today,
         'offers': {o['id']: {
             'name': o['name'],
+            # Carried over run to run for the same reason as the name: it is the
+            # text of a live ad, and rewriting it costs that ad's statistics.
+            'description': o['description'],
             'categoryId': o['categoryId'],
             'url': o['url'],
             # Stand-ins are not this offer's picture — storing one would make
@@ -84,6 +87,7 @@ def build_state(offers, today):
             'available': o['available'],
             'custom_label_0': o.get('custom_label_0', 'False'),
             'custom_label_1': o.get('custom_label_1', 'False'),
+            'custom_label_2': o.get('custom_label_2', 'False'),
             'custom_score': o.get('custom_score'),
             'sales_notes': o.get('sales_notes'),
             'gone_cycles': o.get('gone_cycles', 0),
@@ -139,6 +143,26 @@ def generation_summary(generator):
     if s.get('price_mismatch'):
         parts.append('ЦЕНА НЕ НАЙДЕНА НА СТРАНИЦЕ: %d' % s['price_mismatch'])
     return 'тексты: ' + ', '.join(parts)
+
+
+def quiet_warnings(generator):
+    """Things worth mentioning on a day that otherwise has no news.
+
+    None of these move the catalogue, so none of them reach the change report —
+    but each means the run had to work around something, and a run that works
+    around the same thing every morning is a problem nobody is looking at.
+    """
+    s = generator.stats
+    out = []
+    if s.get('fallback'):
+        out.append('текстов на старом алгоритме: %d' % s['fallback'])
+    if s.get('reshaped'):
+        out.append('заголовков пересобрано: %d' % s['reshaped'])
+    if s.get('price_mismatch'):
+        out.append('цена не найдена на странице: %d' % s['price_mismatch'])
+    if generator.reason:
+        out.append('генерация выключена: %s' % generator.reason)
+    return out
 
 
 def run(client_code, dry_run=False, out_path=None, no_generate=False,
@@ -256,7 +280,6 @@ def run(client_code, dry_run=False, out_path=None, no_generate=False,
     catalog.record(client_code, today, catalog_programs, pages, offers, cfg)
     _publish_monthly(s3, bucket, client_code)
 
-    # Daily runs would otherwise ping every morning with "nothing changed".
     if has_changes(diff, problems):
         print('[6/6] отчёт в телеграм')
         notify.send(notify.format_report(client_code, diff,
@@ -264,7 +287,12 @@ def run(client_code, dry_run=False, out_path=None, no_generate=False,
                                          problems, no_image,
                                          generation_summary(generator)))
     else:
-        print('[6/6] изменений нет — в телеграм не пишем')
+        # A quiet day still gets a line. Saying nothing is right about the
+        # catalogue and wrong about the reader: several silent days look exactly
+        # like a robot that stopped on the first of them.
+        print('[6/6] изменений нет — короткая отметка в телеграм')
+        notify.send(notify.format_heartbeat(client_code, diff['total'],
+                                            quiet_warnings(generator)))
     return {'status': 'ok', 'offers': len(offers), 'diff': diff,
             'problems': len(problems), 'texts': dict(generator.stats)}
 

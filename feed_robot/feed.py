@@ -291,6 +291,10 @@ def price_is_on_the_page(price, page):
 
 
 def category_of(program, cfg):
+    # A programme declared straight in the config carries its own category:
+    # it belongs to no catalogue section, so the section map has nothing to say.
+    if program.get('categoryId'):
+        return program['categoryId']
     for section in program['sections']:
         cid = cfg['sections'].get(section)
         if cid:
@@ -415,11 +419,16 @@ def _copy_for(program, page, prev, cfg, generator, legacy, known=None):
         if fresh:
             name = fresh
             generator.stats['reshaped'] += 1
-        text = build_description(page, dict(program, offer_name=name),
-                                 cfg.get('forbidden_phrases', []),
-                                 cfg.get('offer_tail', DEFAULT_OFFER),
-                                 cfg.get('label_source', 'title'),
-                                 (known or {}).get('kind', DEFAULT_KIND), cfg)
+        # The stored description is left alone for the same reason the stored
+        # title is: it is running text in a live ad, and rebuilding it resets
+        # the statistics Direct has on that ad. Clients whose state predates
+        # this have no stored description and keep getting a rebuilt one.
+        text = prev.get('description') or build_description(
+            page, dict(program, offer_name=name),
+            cfg.get('forbidden_phrases', []),
+            cfg.get('offer_tail', DEFAULT_OFFER),
+            cfg.get('label_source', 'title'),
+            (known or {}).get('kind', DEFAULT_KIND), cfg)
         generator.stats['kept'] += 1
         return name, text, None
     if generator.client and not generator.exhausted:
@@ -508,6 +517,10 @@ def build_offers(programs, pages, cfg, images, state, generator=None):
             oldprice=program['oldprice'],
             custom_label_0=prev.get('custom_label_0', 'False'),
             custom_label_1=prev.get('custom_label_1', 'False'),
+            # third splits its catalogue into three directions and wants the
+            # spend cut by them without rebuilding the category filter, so the
+            # direction rides along in a label of its own.
+            custom_label_2=prev.get('custom_label_2', 'False'),
             custom_score=prev.get('custom_score'),
             sales_notes=clean_sales_notes(prev.get('sales_notes')),
             hours=known['hours'],
@@ -659,6 +672,10 @@ def render(offers, cfg):
         out.append(el('currencyId', 'RUR'))
         out.append(el('custom_label_0', o.get('custom_label_0', 'False')))
         out.append(el('custom_label_1', o.get('custom_label_1', 'False')))
+        # Only the client that uses it gets the tag: the first two feeds have no
+        # third label, and a change made for the third must not move them.
+        if o.get('custom_label_2') and o['custom_label_2'] != 'False':
+            out.append(el('custom_label_2', o['custom_label_2']))
         if o.get('custom_score'):
             out.append(el('custom_score', o['custom_score']))
         out.append('</offer>')
