@@ -448,6 +448,57 @@ def _copy_for(program, page, prev, cfg, generator, legacy, known=None):
     return name, text, None
 
 
+# Everything an offer must carry by the time it reaches the dedupe passes,
+# validate and render. Two lists have to agree on this: what the build reads off
+# an offer, and what build_state keeps between runs — because a stored entry
+# becomes an offer again when its programme disappears from the catalogue.
+#
+# They drifted apart once and it cost two feeds a day: `description` was added
+# to what the build reads long before it was added to what the state keeps, and
+# nothing noticed, because the stored entries only come back as offers when a
+# programme is retired. On 10 September one was, and both runs died on
+# KeyError: 'description'. A test now holds the two lists together.
+OFFER_FIELDS = ('id', 'available', 'name', 'categoryId', 'url', 'picture',
+                'description', 'price', 'oldprice')
+
+
+def missing_fields(offer, cfg):
+    """Fields without which this offer cannot go into the feed.
+
+    The crossed-out price is mandatory only for catalogues that run a standing
+    discount; demanding it from the rest empties their feed.
+    """
+    return [f for f in OFFER_FIELDS
+            if not offer.get(f)
+            and (f != 'oldprice' or cfg.get('require_oldprice', True))]
+
+
+def revive(oid, prev, cfg):
+    """Turn a stored entry back into a complete offer.
+
+    A programme that vanished from the catalogue stays in the feed one more
+    cycle as unavailable, so Direct stops serving it instead of erroring on an
+    offer that is simply gone. By then the page is unreachable, so the only
+    material left is what the last run stored — and anything the stored entry
+    lacks has to be filled in here rather than read straight off it.
+    """
+    offer = dict(prev, id=oid, available='false',
+                 gone_cycles=prev.get('gone_cycles', 0) + 1,
+                 has_own_image=False, has_cluster_image=False,
+                 hours='', kind='', cluster='')
+    # The description is the one field rebuildable without the page: the stored
+    # title still holds the course name, and course_label strips the ad
+    # decorations back off it. State files written before the description was
+    # kept have none, which is the case that broke.
+    if not offer.get('description') and offer.get('name'):
+        offer['description'] = build_description(
+            {}, dict(offer, offer_name=offer['name']),
+            cfg.get('forbidden_phrases', []),
+            cfg.get('offer_tail', DEFAULT_OFFER),
+            cfg.get('label_source', 'title'), DEFAULT_KIND, cfg)
+    return offer
+
+
 def build_offers(programs, pages, cfg, images, state, generator=None):
     """Turn crawled programs into offer dicts, carrying over stored fields."""
     phrases = cfg.get('forbidden_phrases', [])
@@ -533,13 +584,23 @@ def build_offers(programs, pages, cfg, images, state, generator=None):
     # Programs that vanished from the catalog stay in the feed as unavailable
     # for one cycle, so Direct stops serving them instead of erroring out.
     live = {o['id'] for o in offers}
+    unrevivable = []
     for oid, prev in stored.items():
         if oid in live or prev.get('gone_cycles', 0) >= 1:
             continue
-        prev = dict(prev)
-        prev.update(id=oid, available='false', gone_cycles=prev.get('gone_cycles', 0) + 1,
-                    has_own_image=False, hours='', kind='')
-        offers.append(prev)
+        gone = revive(oid, prev, cfg)
+        lacks = missing_fields(gone, cfg)
+        if lacks:
+            # Nothing invents a category or a price out of thin air. One extra
+            # cycle in the feed is a courtesy to Direct, not a requirement, so
+            # an entry too thin to publish is dropped and said out loud.
+            unrevivable.append((oid, lacks))
+            continue
+        offers.append(gone)
+    if unrevivable:
+        print('      пропали из каталога и не восстановились: %d' % len(unrevivable))
+        for oid, lacks in unrevivable[:5]:
+            print('        %s не хватает: %s' % (oid, ', '.join(lacks)))
 
     _dedupe_names(offers)
     _dedupe_descriptions(offers)
@@ -602,12 +663,8 @@ def validate(offers, cfg):
         seen_urls.add(o['url'])
         if o['categoryId'] not in cats:
             problems.append('оффер %s: категория %r вне справочника' % (o['id'], o['categoryId']))
-        required = ['name', 'url', 'picture', 'description', 'price']
-        if cfg.get('require_oldprice', True):
-            required.append('oldprice')
-        for field in required:
-            if not o.get(field):
-                problems.append('оффер %s: пустое поле %s' % (o['id'], field))
+        for field in missing_fields(o, cfg):
+            problems.append('оффер %s: пустое поле %s' % (o['id'], field))
         if o.get('price') and o.get('oldprice') and o['oldprice'] <= o['price']:
             problems.append('оффер %s: oldprice %s не выше price %s'
                             % (o['id'], o['oldprice'], o['price']))

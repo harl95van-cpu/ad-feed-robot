@@ -222,3 +222,15 @@ of them shipped that way and were only found by reading the compiled output.
 If you changed anything that touches existing offers, run the build twice
 against the same input and confirm the second run changes nothing. A repair that
 does not converge rewrites live ads every morning.
+
+If you added a field to an offer, add it to `build_state` as well, and check
+that `OFFER_FIELDS` still names everything the build reads. A programme retired
+from the catalogue comes back as an offer rebuilt from stored state alone, so a
+field kept in one list and not the other is a run that dies weeks later, on a
+morning nothing else changed. That is not hypothetical: `description` drifted
+apart this way and killed two live feeds the day a course was withdrawn.
+
+More generally, a branch that runs only on a rare event — a programme retired, a
+price gone, a page unreachable — is not exercised by running the robot, so it
+needs a test of its own. Every branch named in that sentence has been broken at
+some point, and none of them were caught by a build that finished successfully.
