@@ -283,6 +283,39 @@ DEDUPED = re.compile(r'\((?:\d+\s*ч|id\s*[\w-]+)\)\s*$')
 
 INSTALMENT = re.compile(r'рассрочк', re.I)
 
+# A price quoted inside ad copy: «Обучение по травматологии 20000₽. Диплом!».
+PRICE_IN_TEXT = re.compile(r'(\d[\d\s]*\d|\d)(\s*)(₽|руб\.?)', re.I)
+
+
+def refresh_price(text, price):
+    """Put today's price into copy that still quotes yesterday's.
+
+    Some catalogues write the price into the ad title itself. Stored copy is
+    otherwise left strictly alone — it is a live ad and rewriting it resets the
+    statistics Direct has on it — but a title promising 20000₽ beside an offer
+    that now costs 21000 is already broken, and a broken ad is worth less than
+    the statistics a repair costs. The rule is the client's own: the visitor
+    lands on the page, so whatever the page charges is what the ad must say.
+
+    Only the figure moves. The wording, and therefore everything the ad has
+    earned on that wording, stays where it is.
+    """
+    if not price:
+        return text
+
+    def swap(m):
+        digits = re.sub(r'\D', '', m.group(1))
+        if not digits or int(digits) == int(price):
+            return m.group(0)
+        # Follow the copy's own habit: «20000₽» stays tight, «20 000 ₽» keeps
+        # its thousands separator.
+        sep = re.search(r'\s', m.group(1))
+        shown = (format(int(price), ',').replace(',', sep.group(0)) if sep
+                 else str(int(price)))
+        return shown + m.group(2) + m.group(3)
+
+    return PRICE_IN_TEXT.sub(swap, text)
+
 
 def clean_sales_notes(stored):
     """Drop a special-offer line that repeats the instalment plan.
@@ -451,6 +484,20 @@ def _copy_for(program, page, prev, cfg, generator, legacy, known=None):
             cfg.get('offer_tail', DEFAULT_OFFER),
             cfg.get('label_source', 'title'),
             (known or {}).get('kind', DEFAULT_KIND), cfg)
+        # A price quoted inside the copy has to follow the page exactly as the
+        # offer's own price does — otherwise the ad and the landing page state
+        # two different numbers, which is the one thing this client asked never
+        # to happen. Only the figure is touched; the wording stays.
+        priced_name, priced_text = refresh_price(name, price), refresh_price(text, price)
+        if priced_name != name or priced_text != text:
+            generator.stats['price_refreshed'] += 1
+            # A longer figure can push the title past what the ad will show; the
+            # deterministic title, which quotes no price at all, is then better
+            # than a correct number nobody sees.
+            name = (priced_name if len(priced_name) <= texts.TITLE_LIMIT
+                    else legacy()[0])
+            if len(priced_text) <= texts.TEXT_LIMIT:
+                text = priced_text
         generator.stats['kept'] += 1
         return name, text, None
     if generator.client and not generator.exhausted:

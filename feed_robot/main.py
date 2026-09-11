@@ -126,6 +126,13 @@ def generation_summary(generator):
                  'без генерации: %d' % (s.get('kept', 0) + s.get('legacy', 0))]
         if s.get('reshaped'):
             parts.append('укорочено заголовков: %d' % s['reshaped'])
+        # Both of these happen with the model switched off, and the client whose
+        # copy quotes prices is exactly the one running without it — reporting
+        # them only on the generating path hid them from the run that needs them.
+        if s.get('price_refreshed'):
+            parts.append('обновлена цена в тексте: %d' % s['price_refreshed'])
+        if s.get('price_mismatch'):
+            parts.append('ЦЕНА НЕ НАЙДЕНА НА СТРАНИЦЕ: %d' % s['price_mismatch'])
         return 'тексты: ' + ', '.join(parts)
     parts = ['новых от модели: %d' % s.get('model', 0)]
     if s.get('fallback'):
@@ -140,6 +147,8 @@ def generation_summary(generator):
         parts.append('без генерации: %d' % s['kept'])
     if s.get('reshaped'):
         parts.append('укорочено заголовков: %d' % s['reshaped'])
+    if s.get('price_refreshed'):
+        parts.append('обновлена цена в тексте: %d' % s['price_refreshed'])
     if s.get('price_mismatch'):
         parts.append('ЦЕНА НЕ НАЙДЕНА НА СТРАНИЦЕ: %d' % s['price_mismatch'])
     return 'тексты: ' + ', '.join(parts)
@@ -158,6 +167,8 @@ def quiet_warnings(generator):
         out.append('текстов на старом алгоритме: %d' % s['fallback'])
     if s.get('reshaped'):
         out.append('заголовков пересобрано: %d' % s['reshaped'])
+    if s.get('price_refreshed'):
+        out.append('обновлена цена внутри текста: %d' % s['price_refreshed'])
     if s.get('price_mismatch'):
         out.append('цена не найдена на странице: %d' % s['price_mismatch'])
     if generator.reason:
