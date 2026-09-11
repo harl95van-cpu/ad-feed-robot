@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Assembles a YML feed for Yandex Direct out of crawled catalog data."""
 import re
+import hashlib
 import datetime
 from xml.sax.saxutils import escape
 from collections import Counter
@@ -54,6 +55,23 @@ def _cut(s, n):
     return out.rstrip(DEBRIS)
 
 
+def _balance(s):
+    """Close a quote or bracket the source itself left open.
+
+    The repair inside _cut only runs when the robot shortens a phrase, so a
+    label that arrives unbalanced sails through untouched: one Tilda store card
+    is named «Профессия «Адаптивная физкультура» with no closing quote, and it
+    became the live title «Обучение: Профессия «Адаптивная физкультура. Диплом!».
+    Closing keeps the whole name, where dropping the fragment — the right move
+    after a truncation, which leaves half a phrase — would lose most of it.
+    """
+    for opener, closer in (('«', '»'), ('(', ')')):
+        missing = s.count(opener) - s.count(closer)
+        if missing > 0:
+            s += closer * missing
+    return s
+
+
 def strip_forbidden(text, phrases):
     """Remove banned marketing claims (e.g. the Saint Petersburg wording).
 
@@ -100,7 +118,7 @@ def label_of(page, source='title', program=None):
                   card holds the bare speciality).
     """
     if source == 'name' and (program or {}).get('name'):
-        return re.sub(r'\s+', ' ', program['name']).strip(' .«»')
+        return _balance(re.sub(r'\s+', ' ', program['name']).strip(' .«»'))
     quoted = re.search(r'«([^»]+)»', page.get('h1', ''))
     if source == 'h1_quoted' and quoted:
         label = quoted.group(1)
@@ -110,7 +128,7 @@ def label_of(page, source='title', program=None):
         label = _trim_tail(SEO_TAIL.sub('', label).strip())
         if (not label or len(label) > 70) and quoted:
             label = quoted.group(1)
-    return re.sub(r'\s+', ' ', label).strip(' .«»')
+    return _balance(re.sub(r'\s+', ' ', label).strip(' .«»'))
 
 
 NAME_TEMPLATES = {
@@ -256,8 +274,12 @@ def build_description(page, program, phrases, offer=DEFAULT_OFFER,
     return texts.tidy('%s. %s' % (_cut(label, budget - len(tail) - 2), tail))
 
 
-# The marks _dedupe_names leaves on a title it had to make unique.
-DEDUPED = re.compile(r'\((?:\d+\s*ч|id\s*\d+)\)\s*$')
+# The marks _dedupe_names leaves on a title it had to make unique. The id form
+# has to admit letters and hyphens, not only digits: a client whose ids are url
+# slugs gets «(id zpr)», and a mark this pattern fails to recognise is a title
+# the repair pass and the dedupe pass undo in turn, rewriting the ad and
+# resetting its statistics every single morning.
+DEDUPED = re.compile(r'\((?:\d+\s*ч|id\s*[\w-]+)\)\s*$')
 
 INSTALMENT = re.compile(r'рассрочк', re.I)
 
@@ -615,6 +637,32 @@ def build_offers(programs, pages, cfg, images, state, generator=None):
     return offers
 
 
+# How long a disambiguating tag may be. Catalogue ids are short numbers for
+# some clients and url slugs for others, and a slug is long: pasted in whole,
+# «defektologiya-zaderzhka-psihicheskogo-razvitiya-zpr» made a 105-character
+# title, past the display limit and past the 100 the format itself allows.
+MARK_LIMIT = 12
+
+
+def _mark(oid):
+    """A short, stable tag that tells two identical titles apart.
+
+    Stable matters more than pretty: a tag that changes between runs rewrites
+    the ad and resets its statistics every morning. A slug's own last segment is
+    used when it is short enough to read — those tails are the client's own
+    abbreviations, «…-zpr», «…-ras» — and a hash of the id otherwise. Short
+    numeric ids come back unchanged, so the two clients running on them keep the
+    titles they already have.
+    """
+    oid = str(oid)
+    if len(oid) <= MARK_LIMIT:
+        return oid
+    tail = oid.rsplit('-', 1)[-1]
+    if 2 <= len(tail) <= MARK_LIMIT:
+        return tail
+    return hashlib.md5(oid.encode('utf-8')).hexdigest()[:6]
+
+
 def _dedupe_names(offers):
     """Two programmes can end up with the same title; the hours tell them apart.
 
@@ -626,12 +674,13 @@ def _dedupe_names(offers):
     counts = Counter(o['name'] for o in offers)
     for o in offers:
         if counts[o['name']] > 1:
-            suffix = ' (%s ч)' % o['hours'] if o.get('hours') else ' (id %s)' % o['id']
+            suffix = (' (%s ч)' % o['hours'] if o.get('hours')
+                      else ' (id %s)' % _mark(o['id']))
             o['name'] = _cut(o['name'], limit - len(suffix)) + suffix
     still = {n for n, c in Counter(o['name'] for o in offers).items() if c > 1}
     for o in offers:
         if o['name'] in still:
-            suffix = ' (id %s)' % o['id']
+            suffix = ' (id %s)' % _mark(o['id'])
             o['name'] = _cut(o['name'], limit - len(suffix)) + suffix
 
 
